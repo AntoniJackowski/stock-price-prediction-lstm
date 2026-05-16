@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
-
+import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 
@@ -166,6 +166,105 @@ forecast_entry = tk.Entry(
 forecast_entry.insert(0, "20")
 forecast_entry.pack(fill="x", padx=25, pady=(5, 25), ipady=8)
 
+
+def add_precise_tooltip(fig, ax, canvas, series_list):
+    tooltip = ax.annotate(
+        "",
+        xy=(0, 0),
+        xytext=(15, 15),
+        textcoords="offset points",
+        bbox=dict(
+            boxstyle="round,pad=0.5",
+            fc="#020617",
+            ec=ACCENT,
+            lw=1.2,
+            alpha=0.95
+        ),
+        arrowprops=dict(
+            arrowstyle="->",
+            color=ACCENT,
+            lw=1.2
+        ),
+        color=TEXT,
+        fontsize=10
+    )
+
+    tooltip.set_visible(False)
+
+    marker, = ax.plot(
+        [],
+        [],
+        marker="o",
+        markersize=7,
+        color=ACCENT,
+        linestyle="None",
+        zorder=10
+    )
+
+    def on_move(event):
+        if event.inaxes != ax or event.xdata is None:
+            tooltip.set_visible(False)
+            marker.set_data([], [])
+            canvas.draw_idle()
+            return
+
+        closest_point = None
+        min_distance = float("inf")
+
+        for name, dates, values in series_list:
+            x_values = mdates.date2num(pd.to_datetime(dates))
+
+            index = np.searchsorted(x_values, event.xdata)
+
+            possible_indexes = []
+            if index > 0:
+                possible_indexes.append(index - 1)
+            if index < len(x_values):
+                possible_indexes.append(index)
+
+            for i in possible_indexes:
+                distance = abs(x_values[i] - event.xdata)
+
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_point = (
+                        name,
+                        x_values[i],
+                        values[i]
+                    )
+
+        if closest_point is None:
+            tooltip.set_visible(False)
+            marker.set_data([], [])
+            canvas.draw_idle()
+            return
+
+        name, x_point, y_point = closest_point
+        date_text = mdates.num2date(x_point).strftime("%Y-%m-%d")
+
+        tooltip.xy = (x_point, y_point)
+        tooltip.set_text(
+            f"{name}\nData: {date_text}\nKurs: {y_point:.2f} USD"
+        )
+
+        canvas_width = fig.canvas.get_width_height()[0]
+
+        if event.x > canvas_width * 0.75:
+            tooltip.set_position((-140, 15))
+        else:
+            tooltip.set_position((15, 15))
+
+        marker.set_data([x_point], [y_point])
+        tooltip.set_visible(True)
+
+        canvas.draw_idle()
+
+    fig.canvas.mpl_connect("motion_notify_event", on_move)
+
+
+
+
+
 def show_historical_chart():
     global gold_data
     global chart_canvas
@@ -248,6 +347,20 @@ def show_historical_chart():
     current_figure = fig
 
     chart_canvas = FigureCanvasTkAgg(fig, master=chart_panel)
+
+    add_precise_tooltip(
+        fig,
+        ax,
+        chart_canvas,
+        [
+            (
+                "Cena zamknięcia",
+                filtered_data["Date"].to_numpy(),
+                filtered_data["Close"].to_numpy()
+            )
+        ]
+    )
+
     chart_canvas.draw()
     chart_canvas.get_tk_widget().pack(fill="both", expand=True, padx=25, pady=20)
 
@@ -510,6 +623,25 @@ def show_forecast_chart(future_predictions):
     current_figure = fig
 
     chart_canvas = FigureCanvasTkAgg(fig, master=chart_panel)
+
+    add_precise_tooltip(
+        fig,
+        ax,
+        chart_canvas,
+        [
+            (
+                "Cena historyczna",
+                historical_data["Date"].to_numpy(),
+                historical_data["Close"].to_numpy()
+            ),
+            (
+                "Prognoza LSTM",
+                future_dates.to_numpy(),
+                np.array(future_predictions)
+            )
+        ]
+    )
+
     chart_canvas.draw()
     chart_canvas.get_tk_widget().pack(fill="both", expand=True, padx=25, pady=20)
 
