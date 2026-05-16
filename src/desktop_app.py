@@ -1,14 +1,31 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
+from pathlib import Path
 
+import pandas as pd
+import matplotlib.pyplot as plt
 
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import numpy as np
+
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from pandas.tseries.offsets import BDay
 # =========================
-# KOLORY
+# COLOURS
 # =========================
 
 BG = "#0f172a"
 PANEL = "#111827"
 CARD = "#1e293b"
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_PATH = BASE_DIR / "data" / "Gold_features.csv"
+gold_data = None
+chart_canvas = None
+FEATURE_COLUMNS = ["Close", "Volume", "RSI", "MACD", "MACD_Signal"]
+TARGET_COLUMN = "Close"
+TIME_STEPS = 60
 ACCENT = "#38bdf8"
 ACCENT_GREEN = "#22c55e"
 TEXT = "#f8fafc"
@@ -18,7 +35,7 @@ BUTTON_HOVER = "#1d4ed8"
 
 
 # =========================
-# OKNO
+# WINDOW
 # =========================
 
 root = tk.Tk()
@@ -148,6 +165,122 @@ forecast_entry = tk.Entry(
 forecast_entry.insert(0, "20")
 forecast_entry.pack(fill="x", padx=25, pady=(5, 25), ipady=8)
 
+def show_historical_chart():
+    global gold_data
+    global chart_canvas
+
+    if gold_data is None:
+        load_gold_data()
+
+    if gold_data is None:
+        return
+
+    try:
+        days = int(history_entry.get())
+    except ValueError:
+        messagebox.showerror(
+            "Błąd",
+            "Liczba dni historii musi być liczbą całkowitą."
+        )
+        return
+
+    if days <= 0:
+        messagebox.showerror(
+            "Błąd",
+            "Liczba dni musi być większa od zera."
+        )
+        return
+
+    filtered_data = gold_data.tail(days)
+
+    last_price = filtered_data["Close"].iloc[-1]
+
+    current_price_label.config(
+        text=f"{last_price:.2f} USD"
+    )
+
+    status_label.config(
+        text=f"Status: pokazano ostatnie {len(filtered_data)} dni"
+    )
+
+    chart_placeholder.pack_forget()
+
+    if chart_canvas is not None:
+        chart_canvas.get_tk_widget().destroy()
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    fig.patch.set_facecolor(CARD)
+    ax.set_facecolor(CARD)
+
+    ax.plot(
+        filtered_data["Date"],
+        filtered_data["Close"],
+        linewidth=2,
+        label="Cena zamknięcia"
+    )
+
+    ax.set_title(
+        f"Historyczny kurs złota — ostatnie {len(filtered_data)} dni",
+        color=TEXT,
+        fontsize=14,
+        fontweight="bold"
+    )
+
+    ax.set_xlabel("Data", color=MUTED)
+    ax.set_ylabel("Cena USD", color=MUTED)
+
+    ax.tick_params(axis="x", colors=MUTED, rotation=30)
+    ax.tick_params(axis="y", colors=MUTED)
+
+    ax.grid(True, alpha=0.3)
+
+    legend = ax.legend()
+    legend.get_frame().set_facecolor(CARD)
+    legend.get_frame().set_edgecolor(CARD)
+
+    for text in legend.get_texts():
+        text.set_color(TEXT)
+
+    fig.tight_layout()
+
+    chart_canvas = FigureCanvasTkAgg(fig, master=chart_panel)
+    chart_canvas.draw()
+    chart_canvas.get_tk_widget().pack(fill="both", expand=True, padx=25, pady=20)
+
+
+def load_gold_data():
+    global gold_data
+
+    if not DATA_PATH.exists():
+        messagebox.showerror(
+            "Błąd",
+            "Nie znaleziono pliku data/Gold_features.csv"
+        )
+        status_label.config(text="Status: brak pliku z danymi")
+        return
+
+    gold_data = pd.read_csv(DATA_PATH)
+
+    gold_data["Date"] = pd.to_datetime(gold_data["Date"])
+    gold_data = gold_data.sort_values("Date")
+    gold_data = gold_data.dropna()
+
+    last_price = gold_data["Close"].iloc[-1]
+
+    current_price_label.config(
+        text=f"{last_price:.2f} USD"
+    )
+
+    status_label.config(
+        text=f"Status: wczytano {len(gold_data)} rekordów"
+    )
+
+    messagebox.showinfo(
+        "Sukces",
+        "Dane złota zostały poprawnie wczytane."
+    )
+
 
 show_button = tk.Button(
     left_panel,
@@ -159,10 +292,216 @@ show_button = tk.Button(
     activeforeground="white",
     relief="flat",
     cursor="hand2",
-    height=2
+    height=2,
+    command=show_historical_chart
 )
 show_button.pack(fill="x", padx=25, pady=(0, 12))
 
+def create_sequences(features, target, time_steps):
+    X = []
+    y = []
+
+    for i in range(time_steps, len(features)):
+        X.append(features[i - time_steps:i])
+        y.append(target[i])
+
+    return np.array(X), np.array(y)
+
+def generate_lstm_forecast():
+    global gold_data
+    global chart_canvas
+
+    if gold_data is None:
+        load_gold_data()
+
+    if gold_data is None:
+        return
+
+    try:
+        forecast_days = int(forecast_entry.get())
+    except ValueError:
+        messagebox.showerror(
+            "Błąd",
+            "Liczba dni prognozy musi być liczbą całkowitą."
+        )
+        return
+
+    if forecast_days <= 0:
+        messagebox.showerror(
+            "Błąd",
+            "Liczba dni prognozy musi być większa od zera."
+        )
+        return
+
+    status_label.config(text="Status: trenowanie modelu LSTM...")
+    root.update_idletasks()
+
+    data = gold_data[FEATURE_COLUMNS].dropna()
+
+    feature_scaler = MinMaxScaler(feature_range=(0, 1))
+    target_scaler = MinMaxScaler(feature_range=(0, 1))
+
+    scaled_features = feature_scaler.fit_transform(data[FEATURE_COLUMNS])
+    scaled_target = target_scaler.fit_transform(data[[TARGET_COLUMN]])
+
+    X, y = create_sequences(
+        scaled_features,
+        scaled_target,
+        TIME_STEPS
+    )
+
+    train_size = int(len(X) * 0.8)
+
+    X_train = X[:train_size]
+    y_train = y[:train_size]
+
+    X_test = X[train_size:]
+    y_test = y[train_size:]
+
+    model = Sequential()
+
+    model.add(
+        LSTM(
+            units=64,
+            return_sequences=True,
+            input_shape=(X_train.shape[1], X_train.shape[2])
+        )
+    )
+    model.add(Dropout(0.2))
+
+    model.add(
+        LSTM(
+            units=64,
+            return_sequences=False
+        )
+    )
+    model.add(Dropout(0.2))
+
+    model.add(Dense(32, activation="relu"))
+    model.add(Dense(1))
+
+    model.compile(
+        optimizer="adam",
+        loss="mean_squared_error"
+    )
+
+    model.fit(
+        X_train,
+        y_train,
+        epochs=10,
+        batch_size=32,
+        validation_data=(X_test, y_test),
+        verbose=0
+    )
+
+    last_sequence = scaled_features[-TIME_STEPS:].copy()
+    future_predictions = []
+
+    for _ in range(forecast_days):
+        input_data = last_sequence.reshape(1, TIME_STEPS, len(FEATURE_COLUMNS))
+
+        predicted_scaled_close = model.predict(input_data, verbose=0)[0][0]
+
+        predicted_close = target_scaler.inverse_transform(
+            [[predicted_scaled_close]]
+        )[0][0]
+
+        future_predictions.append(predicted_close)
+
+        next_row = last_sequence[-1].copy()
+        next_row[0] = predicted_scaled_close
+
+        last_sequence = np.vstack([
+            last_sequence[1:],
+            next_row
+        ])
+
+    last_real_price = gold_data["Close"].iloc[-1]
+    last_forecast_price = future_predictions[-1]
+
+    current_price_label.config(
+        text=f"{last_real_price:.2f} USD"
+    )
+
+    forecast_price_label.config(
+        text=f"{last_forecast_price:.2f} USD"
+    )
+
+    show_forecast_chart(future_predictions)
+
+    status_label.config(
+        text=f"Status: wygenerowano prognozę na {forecast_days} dni"
+    )
+
+def show_forecast_chart(future_predictions):
+    global chart_canvas
+
+    try:
+        history_days = int(history_entry.get())
+    except ValueError:
+        history_days = 50
+
+    historical_data = gold_data.tail(history_days)
+
+    last_date = historical_data["Date"].iloc[-1]
+
+    future_dates = pd.bdate_range(
+        start=last_date + BDay(1),
+        periods=len(future_predictions)
+    )
+
+    chart_placeholder.pack_forget()
+
+    if chart_canvas is not None:
+        chart_canvas.get_tk_widget().destroy()
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    fig.patch.set_facecolor(CARD)
+    ax.set_facecolor(CARD)
+
+    ax.plot(
+        historical_data["Date"],
+        historical_data["Close"],
+        linewidth=2,
+        label="Cena historyczna"
+    )
+
+    ax.plot(
+        future_dates,
+        future_predictions,
+        linewidth=2,
+        linestyle="--",
+        label="Prognoza LSTM"
+    )
+
+    ax.set_title(
+        "Prognoza ceny złota przy użyciu LSTM",
+        color=TEXT,
+        fontsize=14,
+        fontweight="bold"
+    )
+
+    ax.set_xlabel("Data", color=MUTED)
+    ax.set_ylabel("Cena USD", color=MUTED)
+
+    ax.tick_params(axis="x", colors=MUTED, rotation=30)
+    ax.tick_params(axis="y", colors=MUTED)
+
+    ax.grid(True, alpha=0.3)
+
+    legend = ax.legend()
+    legend.get_frame().set_facecolor(CARD)
+    legend.get_frame().set_edgecolor(CARD)
+
+    for text in legend.get_texts():
+        text.set_color(TEXT)
+
+    fig.tight_layout()
+
+    chart_canvas = FigureCanvasTkAgg(fig, master=chart_panel)
+    chart_canvas.draw()
+    chart_canvas.get_tk_widget().pack(fill="both", expand=True, padx=25, pady=20)
 
 forecast_button = tk.Button(
     left_panel,
@@ -174,7 +513,8 @@ forecast_button = tk.Button(
     activeforeground="white",
     relief="flat",
     cursor="hand2",
-    height=2
+    height=2,
+    command=generate_lstm_forecast
 )
 forecast_button.pack(fill="x", padx=25)
 
@@ -306,5 +646,7 @@ chart_placeholder.pack(expand=True)
 # =========================
 # START
 # =========================
+
+
 
 root.mainloop()
