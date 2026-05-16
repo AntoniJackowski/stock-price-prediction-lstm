@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "data" / "Gold_features.csv"
 gold_data = None
 chart_canvas = None
+current_figure = None
 FEATURE_COLUMNS = ["Close", "Volume", "RSI", "MACD", "MACD_Signal"]
 TARGET_COLUMN = "Close"
 TIME_STEPS = 60
@@ -168,6 +169,7 @@ forecast_entry.pack(fill="x", padx=25, pady=(5, 25), ipady=8)
 def show_historical_chart():
     global gold_data
     global chart_canvas
+    global current_figure
 
     if gold_data is None:
         load_gold_data()
@@ -243,6 +245,7 @@ def show_historical_chart():
         text.set_color(TEXT)
 
     fig.tight_layout()
+    current_figure = fig
 
     chart_canvas = FigureCanvasTkAgg(fig, master=chart_panel)
     chart_canvas.draw()
@@ -333,7 +336,9 @@ def generate_lstm_forecast():
         )
         return
 
-    status_label.config(text="Status: trenowanie modelu LSTM...")
+    forecast_button.config(state="disabled", text="Trwa generowanie...")
+    show_button.config(state="disabled")
+    status_label.config(text="Status: trwa generowanie prognozy LSTM...")
     root.update_idletasks()
 
     data = gold_data[FEATURE_COLUMNS].dropna()
@@ -432,9 +437,13 @@ def generate_lstm_forecast():
     status_label.config(
         text=f"Status: wygenerowano prognozę na {forecast_days} dni"
     )
+    forecast_button.config(state="normal", text="Generuj prognozę LSTM")
+    show_button.config(state="normal")
+
 
 def show_forecast_chart(future_predictions):
     global chart_canvas
+    global current_figure
 
     try:
         history_days = int(history_entry.get())
@@ -498,10 +507,36 @@ def show_forecast_chart(future_predictions):
         text.set_color(TEXT)
 
     fig.tight_layout()
+    current_figure = fig
 
     chart_canvas = FigureCanvasTkAgg(fig, master=chart_panel)
     chart_canvas.draw()
     chart_canvas.get_tk_widget().pack(fill="both", expand=True, padx=25, pady=20)
+
+def save_chart():
+    if current_figure is None:
+        messagebox.showwarning(
+            "Brak wykresu",
+            "Najpierw wygeneruj wykres historyczny albo prognozę."
+        )
+        return
+
+    file_path = filedialog.asksaveasfilename(
+        defaultextension=".png",
+        filetypes=[("PNG image", "*.png")],
+        title="Zapisz wykres jako"
+    )
+
+    if not file_path:
+        return
+
+    current_figure.savefig(file_path, dpi=300, bbox_inches="tight")
+
+    messagebox.showinfo(
+        "Sukces",
+        f"Wykres został zapisany:\n{file_path}"
+    )
+
 
 forecast_button = tk.Button(
     left_panel,
@@ -517,6 +552,22 @@ forecast_button = tk.Button(
     command=generate_lstm_forecast
 )
 forecast_button.pack(fill="x", padx=25)
+
+save_chart_button = tk.Button(
+    left_panel,
+    text="Zapisz wykres PNG",
+    font=("Segoe UI", 11, "bold"),
+    bg="#f59e0b",
+    fg="#111827",
+    activebackground="#d97706",
+    activeforeground="white",
+    relief="flat",
+    cursor="hand2",
+    height=2,
+    command=save_chart
+)
+
+save_chart_button.pack(fill="x", padx=25, pady=(12, 0))
 
 
 # =========================
@@ -646,6 +697,8 @@ chart_placeholder.pack(expand=True)
 # =========================
 # START
 # =========================
+
+
 
 
 
