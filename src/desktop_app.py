@@ -8,10 +8,11 @@ import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 
+import joblib
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.models import load_model
 from pandas.tseries.offsets import BDay
+import data_prep
 # =========================
 # COLOURS
 # =========================
@@ -24,9 +25,12 @@ DATA_PATH = BASE_DIR / "data" / "Gold_features.csv"
 gold_data = None
 chart_canvas = None
 current_figure = None
-FEATURE_COLUMNS = ["Close", "Volume", "RSI", "MACD", "MACD_Signal"]
+FEATURE_COLUMNS = [
+    "Close", "Volume", "RSI", "MACD",
+    "MACD_Signal", "EMA_20", "BB_High", "BB_Low", "ATR"
+]
 TARGET_COLUMN = "Close"
-TIME_STEPS = 60
+TIME_STEPS = 30
 ACCENT = "#38bdf8"
 ACCENT_GREEN = "#22c55e"
 TEXT = "#f8fafc"
@@ -365,37 +369,55 @@ def show_historical_chart():
     chart_canvas.get_tk_widget().pack(fill="both", expand=True, padx=25, pady=20)
 
 
+import time
+import os
+
+
 def load_gold_data():
+    """
+    Loads gold data. If the file is missing or older than 24 hours,
+    it triggers the data_prep script to refresh the dataset.
+    """
     global gold_data
 
-    if not DATA_PATH.exists():
-        messagebox.showerror(
-            "Błąd",
-            "Nie znaleziono pliku data/Gold_features.csv"
-        )
-        status_label.config(text="Status: brak pliku z danymi")
-        return
+    # 24 hours in seconds
+    update_interval = 86400
 
-    gold_data = pd.read_csv(DATA_PATH)
+    # Check if the file exists and its age
+    file_exists = DATA_PATH.exists()
+    needs_update = False
 
-    gold_data["Date"] = pd.to_datetime(gold_data["Date"])
-    gold_data = gold_data.sort_values("Date")
-    gold_data = gold_data.dropna()
+    if file_exists:
+        file_age = time.time() - os.path.getmtime(DATA_PATH)
+        if file_age > update_interval:
+            needs_update = True
 
-    last_price = gold_data["Close"].iloc[-1]
+    # Trigger download if missing or outdated
+    if not file_exists or needs_update:
+        status_label.config(text="Status: Updating data...")
+        root.update()
 
-    current_price_label.config(
-        text=f"{last_price:.2f} USD"
-    )
+        try:
+            data_prep.prepare_gold_data()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to update data: {e}")
+            status_label.config(text="Status: Update failed")
+            return
 
-    status_label.config(
-        text=f"Status: wczytano {len(gold_data)} rekordów"
-    )
+    # Load the data
+    try:
+        gold_data = pd.read_csv(DATA_PATH)
+        gold_data["Date"] = pd.to_datetime(gold_data["Date"])
+        gold_data = gold_data.sort_values("Date")
+        gold_data = gold_data.dropna()
 
-    messagebox.showinfo(
-        "Sukces",
-        "Dane złota zostały poprawnie wczytane."
-    )
+        last_price = gold_data["Close"].iloc[-1]
+        current_price_label.config(text=f"{last_price:.2f} USD")
+        status_label.config(text=f"Status: Loaded {len(gold_data)} records")
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Could not load data: {e}")
+        status_label.config(text="Status: Load error")
 
 
 show_button = tk.Button(
@@ -423,7 +445,10 @@ def create_sequences(features, target, time_steps):
 
     return np.array(X), np.array(y)
 
+
 def generate_lstm_forecast():
+    load_gold_data()
+
     global gold_data
     global chart_canvas
 
@@ -436,122 +461,85 @@ def generate_lstm_forecast():
     try:
         forecast_days = int(forecast_entry.get())
     except ValueError:
-        messagebox.showerror(
-            "Błąd",
-            "Liczba dni prognozy musi być liczbą całkowitą."
-        )
+        messagebox.showerror("Błąd",
+                             "Liczba dni prognozy musi być liczbą całkowitą.")
         return
 
     if forecast_days <= 0:
-        messagebox.showerror(
-            "Błąd",
-            "Liczba dni prognozy musi być większa od zera."
-        )
+        messagebox.showerror("Błąd",
+                             "Liczba dni prognozy musi być większa od zera.")
         return
 
-    forecast_button.config(state="disabled", text="Trwa generowanie...")
+    forecast_button.config(state="disabled", text="Trwa wczytywanie AI...")
     show_button.config(state="disabled")
-    status_label.config(text="Status: trwa generowanie prognozy LSTM...")
+    status_label.config(text="Status: AI analizuje dane...")
     root.update_idletasks()
 
-    data = gold_data[FEATURE_COLUMNS].dropna()
+    try:
+        # 1. WCZYTANIE ZAMROŻONEGO MODELU I SKALERÓW
+        model_path = BASE_DIR / "data" / "best_gold_model.keras"
+        feature_scaler_path = BASE_DIR / "data" / "feature_scaler.save"
+        target_scaler_path = BASE_DIR / "data" / "target_scaler.save"
 
-    feature_scaler = MinMaxScaler(feature_range=(0, 1))
-    target_scaler = MinMaxScaler(feature_range=(0, 1))
+        model = load_model(model_path)
+        feature_scaler = joblib.load(feature_scaler_path)
+        target_scaler = joblib.load(target_scaler_path)
 
-    scaled_features = feature_scaler.fit_transform(data[FEATURE_COLUMNS])
-    scaled_target = target_scaler.fit_transform(data[[TARGET_COLUMN]])
+        # 2. PRZYGOTOWANIE DANYCH WEJŚCIOWYCH
+        data = gold_data[FEATURE_COLUMNS].dropna()
 
-    X, y = create_sequences(
-        scaled_features,
-        scaled_target,
-        TIME_STEPS
-    )
+        # Używamy transform() a nie fit_transform(), żeby użyć starych reguł skali!
+        scaled_features = feature_scaler.transform(data[FEATURE_COLUMNS])
 
-    train_size = int(len(X) * 0.8)
+        # Bierzemy tylko ostatnie 30 dni, bo to nasz punkt startowy
+        last_sequence = scaled_features[-TIME_STEPS:].copy()
+        future_predictions = []
 
-    X_train = X[:train_size]
-    y_train = y[:train_size]
+        # 3. FORECAST LOOP (Autoregressive approach from Jupyter Notebook)
+        for _ in range(forecast_days):
+            # Format the data into a 3D package required by LSTM (1 sample, 30 days, 9 features)
+            input_data = last_sequence.reshape(1, TIME_STEPS,
+                                               len(FEATURE_COLUMNS))
 
-    X_test = X[train_size:]
-    y_test = y[train_size:]
+            # The AI predicts the price for the next day (as a scaled fraction)
+            predicted_scaled_close = model.predict(input_data, verbose=0)[0][0]
 
-    model = Sequential()
+            # Convert the predicted fraction back into real USD price
+            predicted_close = \
+            target_scaler.inverse_transform([[predicted_scaled_close]])[0][0]
+            future_predictions.append(predicted_close)
 
-    model.add(
-        LSTM(
-            units=64,
-            return_sequences=True,
-            input_shape=(X_train.shape[1], X_train.shape[2])
-        )
-    )
-    model.add(Dropout(0.2))
+            # Slide the time window forward using np.roll (just like in Jupyter Notebook).
+            # This drops the oldest record and shifts all features to the left/up.
+            new_sequence = np.roll(last_sequence, -1, axis=0)
 
-    model.add(
-        LSTM(
-            units=64,
-            return_sequences=False
-        )
-    )
-    model.add(Dropout(0.2))
+            # Insert the newly predicted AI price into the 'Close' column of the newest day.
+            # We put it in the last row (-1) and the first column (0).
+            new_sequence[-1, 0] = predicted_scaled_close
 
-    model.add(Dense(32, activation="relu"))
-    model.add(Dense(1))
+            # Update the sequence so the model can use it in the next loop iteration
+            last_sequence = new_sequence
 
-    model.compile(
-        optimizer="adam",
-        loss="mean_squared_error"
-    )
+        # 4. AKTUALIZACJA INTERFEJSU
+        last_real_price = gold_data["Close"].iloc[-1]
+        last_forecast_price = future_predictions[-1]
 
-    model.fit(
-        X_train,
-        y_train,
-        epochs=10,
-        batch_size=32,
-        validation_data=(X_test, y_test),
-        verbose=0
-    )
+        current_price_label.config(text=f"{last_real_price:.2f} USD")
+        forecast_price_label.config(text=f"{last_forecast_price:.2f} USD")
 
-    last_sequence = scaled_features[-TIME_STEPS:].copy()
-    future_predictions = []
+        show_forecast_chart(future_predictions)
 
-    for _ in range(forecast_days):
-        input_data = last_sequence.reshape(1, TIME_STEPS, len(FEATURE_COLUMNS))
+        status_label.config(
+            text=f"Status: wygenerowano prognozę na {forecast_days} dni")
 
-        predicted_scaled_close = model.predict(input_data, verbose=0)[0][0]
+    except Exception as e:
+        messagebox.showerror("Błąd Krytyczny AI",
+                             f"Coś poszło nie tak z modelem:\n{str(e)}")
+        status_label.config(text="Status: Błąd predykcji")
 
-        predicted_close = target_scaler.inverse_transform(
-            [[predicted_scaled_close]]
-        )[0][0]
-
-        future_predictions.append(predicted_close)
-
-        next_row = last_sequence[-1].copy()
-        next_row[0] = predicted_scaled_close
-
-        last_sequence = np.vstack([
-            last_sequence[1:],
-            next_row
-        ])
-
-    last_real_price = gold_data["Close"].iloc[-1]
-    last_forecast_price = future_predictions[-1]
-
-    current_price_label.config(
-        text=f"{last_real_price:.2f} USD"
-    )
-
-    forecast_price_label.config(
-        text=f"{last_forecast_price:.2f} USD"
-    )
-
-    show_forecast_chart(future_predictions)
-
-    status_label.config(
-        text=f"Status: wygenerowano prognozę na {forecast_days} dni"
-    )
-    forecast_button.config(state="normal", text="Generuj prognozę LSTM")
-    show_button.config(state="normal")
+    finally:
+        forecast_button.config(state="normal", text="Generuj prognozę LSTM")
+        show_button.config(state="normal")
 
 
 def show_forecast_chart(future_predictions):
