@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.ticker as ticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from pandas.tseries.offsets import BDay
 
@@ -189,10 +190,16 @@ class GoldForecastApp:
         # Top Information Cards
         top_cards = tk.Frame(self.right_panel, bg=BG)
         top_cards.pack(fill="x", pady=(0, 20))
-        self._create_small_metric(top_cards, "MODEL", "LSTM")
-        self._create_small_metric(top_cards, "INDICATORS", "RSI, MACD +3")
-        self._create_small_metric(top_cards, "ASSET", "GOLD")
-        self._create_small_metric(top_cards, "DATA", "REAL-TIME")
+
+        # The first three cards have a 16px right margin to separate them.
+        # The left margin is 0 to align with the left edge of the chart below.
+        self._create_small_metric(top_cards, "MODEL", "LSTM", pad_x=(0, 16))
+        self._create_small_metric(top_cards, "INDICATORS", "RSI, MACD +3",
+                                  pad_x=(0, 16))
+        self._create_small_metric(top_cards, "ASSET", "GOLD", pad_x=(0, 16))
+
+        # The last card has zero margins to perfectly align with the right edge.
+        self._create_small_metric(top_cards, "DATA", "REAL-TIME", pad_x=(0, 0))
         
         # Chart Container
         self.chart_panel = tk.Frame(self.right_panel, bg=CARD)
@@ -241,14 +248,26 @@ class GoldForecastApp:
         return val_label
 
     def _create_small_metric(self, parent: tk.Frame, title_text: str,
-                             value_text: str):
+                             value_text: str, pad_x: tuple = (8, 8)):
+        """
+        Creates a small metric card with customizable horizontal padding.
+        The pad_x parameter allows precise alignment with other UI elements.
+        """
         frame = tk.Frame(parent, bg=CARD, height=90)
-        frame.pack(side="left", fill="x", expand=True, padx=8)
+
+        # Apply the asymmetrical padding to align borders perfectly
+        frame.pack(side="left", fill="both", expand=True, padx=pad_x)
         frame.pack_propagate(False)
-        tk.Label(frame, text=title_text, font=("Segoe UI", 9, "bold"),
-                 fg=MUTED, bg=CARD).pack(anchor="w", padx=18, pady=(15, 0))
-        tk.Label(frame, text=value_text, font=("Segoe UI", 18, "bold"),
-                 fg=TEXT, bg=CARD).pack(anchor="w", padx=18, pady=(4, 0))
+
+        tk.Label(
+            frame, text=title_text, font=("Segoe UI", 9, "bold"), fg=MUTED,
+            bg=CARD
+        ).pack(anchor="w", padx=18, pady=(15, 0))
+
+        tk.Label(
+            frame, text=value_text, font=("Segoe UI", 18, "bold"), fg=TEXT,
+            bg=CARD
+        ).pack(anchor="w", padx=18, pady=(4, 0))
 
     # ==========================================
     # BUSINESS LOGIC & DATA HANDLING
@@ -393,11 +412,23 @@ class GoldForecastApp:
     def _style_axes(self, ax, title: str):
         """Applies consistent styling to matplotlib axes."""
         ax.set_title(title, color=TEXT, fontsize=14, fontweight="bold")
-        ax.set_xlabel("Date", color=MUTED)
-        ax.set_ylabel("Price (USD)", color=MUTED)
-        ax.tick_params(axis="x", colors=MUTED, rotation=30)
-        ax.tick_params(axis="y", colors=MUTED)
-        ax.grid(True, alpha=0.3)
+
+        ax.set_xlabel("Date", color=MUTED, labelpad=12)
+        ax.set_ylabel("Price (USD)", color=MUTED, labelpad=12)
+
+        # Enforce a strict single-line date format for major labels
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+
+        # Disable minor locators and formatters to prevent rendering artifacts
+        ax.xaxis.set_minor_locator(ticker.NullLocator())
+        ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+
+        # Style major ticks: remove physical lines and adjust text padding
+        ax.tick_params(axis="x", which="major", colors=MUTED, rotation=30,
+                       length=0, pad=5)
+        ax.tick_params(axis="y", which="major", colors=MUTED, length=0, pad=5)
+
+        ax.grid(True, alpha=0.2)
 
         legend = ax.legend()
         legend.get_frame().set_facecolor(CARD)
@@ -407,11 +438,20 @@ class GoldForecastApp:
 
     def add_precise_tooltip(self, fig, ax, series_list):
         """Attaches an interactive tooltip that tracks the mouse over plot lines."""
+
+        # Tooltip with a dark background, but with border and arrow matched to the Save button
         tooltip = ax.annotate(
             "", xy=(0, 0), xytext=(15, 15), textcoords="offset points",
-            bbox=dict(boxstyle="round,pad=0.5", fc="#020617", ec=ACCENT,
-                      lw=1.2, alpha=0.95),
-            arrowprops=dict(arrowstyle="->", color=ACCENT, lw=1.2), color=TEXT,
+            bbox=dict(
+                boxstyle="round,pad=0.5",
+                fc="#020617",  # Restored original dark background
+                ec="#f59e0b",  # Orange border matching the save button
+                lw=1.2,
+                alpha=0.95
+            ),
+            arrowprops=dict(arrowstyle="->", color="#f59e0b", lw=1.2),
+            # Orange arrow
+            color=TEXT,  # Restored original light text color
             fontsize=10
         )
         tooltip.set_visible(False)
