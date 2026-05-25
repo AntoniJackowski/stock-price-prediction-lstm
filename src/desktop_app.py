@@ -1,36 +1,39 @@
+import os
+import time
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.ticker as ticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import numpy as np
+from pandas.tseries.offsets import BDay
 
 import joblib
-from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import load_model
-from pandas.tseries.offsets import BDay
 import data_prep
-# =========================
-# COLOURS
-# =========================
 
-BG = "#0f172a"
-PANEL = "#111827"
-CARD = "#1e293b"
+# ==========================================
+# CONFIGURATION & CONSTANTS
+# ==========================================
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "data" / "Gold_features.csv"
-gold_data = None
-chart_canvas = None
-current_figure = None
+
 FEATURE_COLUMNS = [
     "Close", "Volume", "RSI", "MACD",
     "MACD_Signal", "EMA_20", "BB_High", "BB_Low", "ATR"
 ]
-TARGET_COLUMN = "Close"
 TIME_STEPS = 30
+DATA_UPDATE_INTERVAL = 86400  # 24 hours in seconds
+
+# UI Colors
+BG = "#0f172a"
+PANEL = "#111827"
+CARD = "#1e293b"
 ACCENT = "#38bdf8"
 ACCENT_GREEN = "#22c55e"
 TEXT = "#f8fafc"
@@ -39,787 +42,593 @@ BUTTON = "#2563eb"
 BUTTON_HOVER = "#1d4ed8"
 
 
-# =========================
-# WINDOW
-# =========================
-
-root = tk.Tk()
-root.title("Gold Forecast AI - LSTM")
-root.geometry("1450x850")
-root.minsize(1200, 720)
-root.configure(bg=BG)
-
-
-# =========================
-# STYLE
-# =========================
-
-style = ttk.Style()
-style.theme_use("clam")
-
-style.configure(
-    "TCombobox",
-    fieldbackground="white",
-    background="white",
-    foreground="black",
-    arrowcolor="black",
-    selectbackground="white",
-    selectforeground="black"
-)
-
-
-# =========================
-# HEADER
-# =========================
-
-header = tk.Frame(root, bg=BG)
-header.pack(fill="x", padx=30, pady=(25, 10))
-
-title = tk.Label(
-    header,
-    text="Gold Forecast AI",
-    font=("Segoe UI", 30, "bold"),
-    fg=TEXT,
-    bg=BG
-)
-title.pack(anchor="w")
-
-subtitle = tk.Label(
-    header,
-    text="Predykcja cen złota z wykorzystaniem sieci LSTM i wskaźników technicznych RSI/MACD",
-    font=("Segoe UI", 12),
-    fg=MUTED,
-    bg=BG
-)
-subtitle.pack(anchor="w", pady=(5, 0))
-
-
-# =========================
-# MAIN LAYOUT
-# =========================
-
-main_frame = tk.Frame(root, bg=BG)
-main_frame.pack(fill="both", expand=True, padx=30, pady=20)
-
-
-# =========================
-# LEFT PANEL
-# =========================
-
-left_panel = tk.Frame(main_frame, bg=PANEL, width=340)
-left_panel.pack(side="left", fill="y", padx=(0, 20))
-left_panel.pack_propagate(False)
-
-panel_title = tk.Label(
-    left_panel,
-    text="Panel inwestora",
-    font=("Segoe UI", 18, "bold"),
-    fg=TEXT,
-    bg=PANEL
-)
-panel_title.pack(anchor="w", padx=25, pady=(25, 20))
-
-
-def label(text):
-    return tk.Label(
-        left_panel,
-        text=text,
-        font=("Segoe UI", 10, "bold"),
-        fg=MUTED,
-        bg=PANEL
-    )
-
-
-label("AKTYWO").pack(anchor="w", padx=25)
-
-asset_combo = ttk.Combobox(
-    left_panel,
-    values=["Gold"],
-    state="readonly",
-    font=("Segoe UI", 11)
-)
-
-asset_combo.current(0)
-asset_combo.pack(fill="x", padx=25, pady=(5, 20))
-
-
-label("HISTORIA CEN — OSTATNIE DNI").pack(anchor="w", padx=25)
-
-history_entry = tk.Entry(
-    left_panel,
-    font=("Segoe UI", 12),
-    bg=CARD,
-    fg=TEXT,
-    insertbackground=TEXT,
-    relief="flat"
-)
-history_entry.insert(0, "50")
-history_entry.pack(fill="x", padx=25, pady=(5, 20), ipady=8)
-
-
-label("PROGNOZA — KOLEJNE DNI").pack(anchor="w", padx=25)
-
-forecast_entry = tk.Entry(
-    left_panel,
-    font=("Segoe UI", 12),
-    bg=CARD,
-    fg=TEXT,
-    insertbackground=TEXT,
-    relief="flat"
-)
-forecast_entry.insert(0, "20")
-forecast_entry.pack(fill="x", padx=25, pady=(5, 25), ipady=8)
-
-
-def add_precise_tooltip(fig, ax, canvas, series_list):
-    tooltip = ax.annotate(
-        "",
-        xy=(0, 0),
-        xytext=(15, 15),
-        textcoords="offset points",
-        bbox=dict(
-            boxstyle="round,pad=0.5",
-            fc="#020617",
-            ec=ACCENT,
-            lw=1.2,
-            alpha=0.95
-        ),
-        arrowprops=dict(
-            arrowstyle="->",
-            color=ACCENT,
-            lw=1.2
-        ),
-        color=TEXT,
-        fontsize=10
-    )
-
-    tooltip.set_visible(False)
-
-    marker, = ax.plot(
-        [],
-        [],
-        marker="o",
-        markersize=7,
-        color=ACCENT,
-        linestyle="None",
-        zorder=10
-    )
-
-    def on_move(event):
-        if event.inaxes != ax or event.xdata is None:
-            tooltip.set_visible(False)
-            marker.set_data([], [])
-            canvas.draw_idle()
-            return
-
-        closest_point = None
-        min_distance = float("inf")
-
-        for name, dates, values in series_list:
-            x_values = mdates.date2num(pd.to_datetime(dates))
-
-            index = np.searchsorted(x_values, event.xdata)
-
-            possible_indexes = []
-            if index > 0:
-                possible_indexes.append(index - 1)
-            if index < len(x_values):
-                possible_indexes.append(index)
-
-            for i in possible_indexes:
-                distance = abs(x_values[i] - event.xdata)
-
-                if distance < min_distance:
-                    min_distance = distance
-                    closest_point = (
-                        name,
-                        x_values[i],
-                        values[i]
-                    )
-
-        if closest_point is None:
-            tooltip.set_visible(False)
-            marker.set_data([], [])
-            canvas.draw_idle()
-            return
-
-        name, x_point, y_point = closest_point
-        date_text = mdates.num2date(x_point).strftime("%Y-%m-%d")
-
-        tooltip.xy = (x_point, y_point)
-        tooltip.set_text(
-            f"{name}\nData: {date_text}\nKurs: {y_point:.2f} USD"
-        )
-
-        canvas_width = fig.canvas.get_width_height()[0]
-
-        if event.x > canvas_width * 0.75:
-            tooltip.set_position((-140, 15))
-        else:
-            tooltip.set_position((15, 15))
-
-        marker.set_data([x_point], [y_point])
-        tooltip.set_visible(True)
-
-        canvas.draw_idle()
-
-    fig.canvas.mpl_connect("motion_notify_event", on_move)
-
-
-
-
-
-def show_historical_chart():
-    global gold_data
-    global chart_canvas
-    global current_figure
-
-    if gold_data is None:
-        load_gold_data()
-
-    if gold_data is None:
-        return
-
-    try:
-        days = int(history_entry.get())
-    except ValueError:
-        messagebox.showerror(
-            "Błąd",
-            "Liczba dni historii musi być liczbą całkowitą."
-        )
-        return
-
-    if days <= 0:
-        messagebox.showerror(
-            "Błąd",
-            "Liczba dni musi być większa od zera."
-        )
-        return
-
-    filtered_data = gold_data.tail(days)
-
-    last_price = filtered_data["Close"].iloc[-1]
-
-    current_price_label.config(
-        text=f"{last_price:.2f} USD"
-    )
-
-    status_label.config(
-        text=f"Status: pokazano ostatnie {len(filtered_data)} dni"
-    )
-
-    chart_placeholder.pack_forget()
-
-    if chart_canvas is not None:
-        chart_canvas.get_tk_widget().destroy()
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-
-    fig.patch.set_facecolor(CARD)
-    ax.set_facecolor(CARD)
-
-    ax.plot(
-        filtered_data["Date"],
-        filtered_data["Close"],
-        linewidth=2,
-        label="Cena zamknięcia"
-    )
-
-    ax.set_title(
-        f"Historyczny kurs złota — ostatnie {len(filtered_data)} dni",
-        color=TEXT,
-        fontsize=14,
-        fontweight="bold"
-    )
-
-    ax.set_xlabel("Data", color=MUTED)
-    ax.set_ylabel("Cena USD", color=MUTED)
-
-    ax.tick_params(axis="x", colors=MUTED, rotation=30)
-    ax.tick_params(axis="y", colors=MUTED)
-
-    ax.grid(True, alpha=0.3)
-
-    legend = ax.legend()
-    legend.get_frame().set_facecolor(CARD)
-    legend.get_frame().set_edgecolor(CARD)
-
-    for text in legend.get_texts():
-        text.set_color(TEXT)
-
-    fig.tight_layout()
-    current_figure = fig
-
-    chart_canvas = FigureCanvasTkAgg(fig, master=chart_panel)
-
-    add_precise_tooltip(
-        fig,
-        ax,
-        chart_canvas,
-        [
-            (
-                "Cena zamknięcia",
-                filtered_data["Date"].to_numpy(),
-                filtered_data["Close"].to_numpy()
-            )
-        ]
-    )
-
-    chart_canvas.draw()
-    chart_canvas.get_tk_widget().pack(fill="both", expand=True, padx=25, pady=20)
-
-
-import time
-import os
-
-
-def load_gold_data():
+class GoldForecastApp:
     """
-    Loads gold data. If the file is missing or older than 24 hours,
-    it triggers the data_prep script to refresh the dataset.
+    Main application class for the Gold Forecast AI.
+    Handles UI rendering, user interactions, data loading, and LSTM inference.
     """
-    global gold_data
 
-    # 24 hours in seconds
-    update_interval = 86400
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("Gold Forecast AI - LSTM")
+        self.root.geometry("1450x850")
+        self.root.minsize(1200, 720)
+        self.root.configure(bg=BG)
 
-    # Check if the file exists and its age
-    file_exists = DATA_PATH.exists()
-    needs_update = False
+        # Application state variables
+        self.gold_data = None
+        self.chart_canvas = None
+        self.current_figure = None
 
-    if file_exists:
-        file_age = time.time() - os.path.getmtime(DATA_PATH)
-        if file_age > update_interval:
-            needs_update = True
+        self._configure_styles()
+        self._build_ui()
 
-    # Trigger download if missing or outdated
-    if not file_exists or needs_update:
-        status_label.config(text="Status: Updating data...")
-        root.update()
+    def _configure_styles(self):
+        """Configures ttk styles for consistent UI appearance."""
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(
+            "TCombobox",
+            fieldbackground="white",
+            background="white",
+            foreground="black",
+            arrowcolor="black",
+            selectbackground="white",
+            selectforeground="black"
+        )
+
+    # ==========================================
+    # UI CONSTRUCTION
+    # ==========================================
+
+    def _build_ui(self):
+        """Assembles all main sections of the graphical user interface."""
+        self._build_header()
+
+        self.main_frame = tk.Frame(self.root, bg=BG)
+        self.main_frame.pack(fill="both", expand=True, padx=30, pady=20)
+
+        self._build_left_panel()
+        self._build_right_panel()
+
+    def _build_header(self):
+        """Constructs the application header with titles."""
+        header = tk.Frame(self.root, bg=BG)
+        header.pack(fill="x", padx=30, pady=(25, 10))
+
+        title = tk.Label(
+            header,
+            text="Gold Forecast AI",
+            font=("Segoe UI", 30, "bold"),
+            fg=TEXT,
+            bg=BG
+        )
+        title.pack(anchor="w")
+
+        subtitle = tk.Label(
+            header,
+            text="Gold price prediction using an LSTM network and advanced "
+                 "indicators (RSI, MACD, EMA, Bollinger Bands, ATR)",
+            font=("Segoe UI", 12),
+            fg=MUTED,
+            bg=BG
+        )
+        subtitle.pack(anchor="w", pady=(5, 0))
+
+    def _build_left_panel(self):
+        """Constructs the sidebar containing inputs, controls, and metric cards."""
+        self.left_panel = tk.Frame(self.main_frame, bg=PANEL, width=340)
+        self.left_panel.pack(side="left", fill="y", padx=(0, 20))
+        self.left_panel.pack_propagate(False)
+
+        panel_title = tk.Label(
+            self.left_panel,
+            text="Investor Panel",
+            font=("Segoe UI", 18, "bold"),
+            fg=TEXT,
+            bg=PANEL
+        )
+        panel_title.pack(anchor="w", padx=25, pady=(25, 20))
+
+        # Inputs
+        self._create_sidebar_label("PRICE HISTORY (LAST DAYS)")
+        self.history_entry = self._create_sidebar_entry("50")
+
+        self._create_sidebar_label("FORECAST (UPCOMING DAYS)")
+        self.forecast_entry = self._create_sidebar_entry("20")
+
+        # Action Buttons
+        self.show_button = tk.Button(
+            self.left_panel, text="Show Historical Data",
+            font=("Segoe UI", 11, "bold"),
+            bg=BUTTON, fg="white", activebackground=BUTTON_HOVER,
+            activeforeground="white",
+            relief="flat", cursor="hand2", height=2,
+            command=self.show_historical_chart
+        )
+        self.show_button.pack(fill="x", padx=25, pady=(0, 12))
+
+        self.forecast_button = tk.Button(
+            self.left_panel, text="Generate LSTM Forecast",
+            font=("Segoe UI", 11, "bold"),
+            bg=ACCENT_GREEN, fg="#052e16", activebackground="#16a34a",
+            activeforeground="white",
+            relief="flat", cursor="hand2", height=2,
+            command=self.start_forecast_thread
+        )
+        self.forecast_button.pack(fill="x", padx=25)
+
+        self.save_chart_button = tk.Button(
+            self.left_panel, text="Save Chart as PNG",
+            font=("Segoe UI", 11, "bold"),
+            bg="#f59e0b", fg="#111827", activebackground="#d97706",
+            activeforeground="white",
+            relief="flat", cursor="hand2", height=2, command=self.save_chart
+        )
+        self.save_chart_button.pack(fill="x", padx=25, pady=(12, 0))
+
+        # Status & Metric Cards
+        self.cards_frame = tk.Frame(self.left_panel, bg=PANEL)
+        self.cards_frame.pack(fill="x", padx=25, pady=30)
+
+        self.current_price_label = self._create_metric_card("CURRENT PRICE",
+                                                            "-", ACCENT)
+        self.forecast_price_label = self._create_metric_card(
+            "FORECASTED PRICE", "-", ACCENT_GREEN)
+
+        self.status_label = tk.Label(
+            self.left_panel, text="Status: Waiting for data",
+            font=("Segoe UI", 10), fg=MUTED, bg=PANEL
+        )
+        self.status_label.pack(anchor="w", padx=25, pady=(15, 0))
+
+    def _build_right_panel(self):
+        """Constructs the main dashboard area for charts and key details."""
+        self.right_panel = tk.Frame(self.main_frame, bg=BG)
+        self.right_panel.pack(side="right", fill="both", expand=True)
+
+        # Top Information Cards
+        top_cards = tk.Frame(self.right_panel, bg=BG)
+        top_cards.pack(fill="x", pady=(0, 20))
+
+        # The first three cards have a 16px right margin to separate them.
+        # The left margin is 0 to align with the left edge of the chart below.
+        self._create_small_metric(top_cards, "MODEL", "LSTM", pad_x=(0, 16))
+        self._create_small_metric(top_cards, "INDICATORS", "RSI, MACD +3",
+                                  pad_x=(0, 16))
+        self._create_small_metric(top_cards, "ASSET", "GOLD", pad_x=(0, 16))
+
+        # The last card has zero margins to perfectly align with the right edge.
+        self._create_small_metric(top_cards, "DATA", "REAL-TIME", pad_x=(0, 0))
+        
+        # Chart Container
+        self.chart_panel = tk.Frame(self.right_panel, bg=CARD)
+        self.chart_panel.pack(fill="both", expand=True)
+
+        chart_title = tk.Label(
+            self.chart_panel, text="Gold Price Chart and Forecast",
+            font=("Segoe UI", 18, "bold"), fg=TEXT, bg=CARD
+        )
+        chart_title.pack(anchor="w", padx=25, pady=(25, 10))
+
+        self.chart_placeholder = tk.Label(
+            self.chart_panel,
+            text=(
+                "The chart will be displayed here:\n\n"
+                "• Historical gold price trends\n"
+                "• Autoregressive LSTM predictions for upcoming days\n"
+                "• Visual comparison of market data and AI forecast\n\n"
+                "Select parameters on the left to begin analysis."
+            ),
+            font=("Segoe UI", 15), fg=MUTED, bg=CARD, justify="center"
+        )
+        self.chart_placeholder.pack(expand=True)
+
+    # UI Helpers
+    def _create_sidebar_label(self, text: str):
+        tk.Label(self.left_panel, text=text, font=("Segoe UI", 10, "bold"),
+                 fg=MUTED, bg=PANEL).pack(anchor="w", padx=25)
+
+    def _create_sidebar_entry(self, default_val: str) -> tk.Entry:
+        entry = tk.Entry(self.left_panel, font=("Segoe UI", 12), bg=CARD,
+                         fg=TEXT, insertbackground=TEXT, relief="flat")
+        entry.insert(0, default_val)
+        entry.pack(fill="x", padx=25, pady=(5, 20), ipady=8)
+        return entry
+
+    def _create_metric_card(self, title_text: str, value_text: str,
+                            color: str) -> tk.Label:
+        frame = tk.Frame(self.cards_frame, bg=CARD)
+        frame.pack(fill="x", pady=8)
+        tk.Label(frame, text=title_text, font=("Segoe UI", 9, "bold"),
+                 fg=MUTED, bg=CARD).pack(anchor="w", padx=15, pady=(12, 0))
+        val_label = tk.Label(frame, text=value_text,
+                             font=("Segoe UI", 18, "bold"), fg=color, bg=CARD)
+        val_label.pack(anchor="w", padx=15, pady=(3, 12))
+        return val_label
+
+    def _create_small_metric(self, parent: tk.Frame, title_text: str,
+                             value_text: str, pad_x: tuple = (8, 8)):
+        """
+        Creates a small metric card with customizable horizontal padding.
+        The pad_x parameter allows precise alignment with other UI elements.
+        """
+        frame = tk.Frame(parent, bg=CARD, height=90)
+
+        # Apply the asymmetrical padding to align borders perfectly
+        frame.pack(side="left", fill="both", expand=True, padx=pad_x)
+        frame.pack_propagate(False)
+
+        tk.Label(
+            frame, text=title_text, font=("Segoe UI", 9, "bold"), fg=MUTED,
+            bg=CARD
+        ).pack(anchor="w", padx=18, pady=(15, 0))
+
+        tk.Label(
+            frame, text=value_text, font=("Segoe UI", 18, "bold"), fg=TEXT,
+            bg=CARD
+        ).pack(anchor="w", padx=18, pady=(4, 0))
+
+    # ==========================================
+    # BUSINESS LOGIC & DATA HANDLING
+    # ==========================================
+
+    def load_gold_data(self):
+        """
+        Loads gold dataset from the CSV file. If the file is missing or older
+        than the update interval (24h), it triggers the data_prep script.
+        """
+        file_exists = DATA_PATH.exists()
+        needs_update = False
+
+        if file_exists:
+            file_age = time.time() - os.path.getmtime(DATA_PATH)
+            if file_age > DATA_UPDATE_INTERVAL:
+                needs_update = True
+
+        if not file_exists or needs_update:
+            self.status_label.config(
+                text="Status: Updating data from Yahoo Finance...")
+            self.root.update_idletasks()
+            try:
+                data_prep.prepare_gold_data()
+            except Exception as e:
+                messagebox.showerror("Download Error",
+                                     f"Failed to update data:\n{e}")
+                self.status_label.config(text="Status: Update failed")
+                return
 
         try:
-            data_prep.prepare_gold_data()
+            self.gold_data = pd.read_csv(DATA_PATH)
+            self.gold_data["Date"] = pd.to_datetime(self.gold_data["Date"])
+            self.gold_data.sort_values("Date", inplace=True)
+            self.gold_data.dropna(inplace=True)
+
+            last_price = self.gold_data["Close"].iloc[-1]
+            self.current_price_label.config(text=f"${last_price:.2f}")
+            self.status_label.config(
+                text=f"Status: Loaded {len(self.gold_data)} market records")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to update data: {e}")
-            status_label.config(text="Status: Update failed")
+            messagebox.showerror("File Error",
+                                 f"Could not load historical data:\n{e}")
+            self.status_label.config(text="Status: Data load error")
+
+    # ==========================================
+    # CHART RENDERING & TOOLTIPS
+    # ==========================================
+
+    def _clear_chart_area(self):
+        """Removes placeholder text and clears the previous canvas."""
+        self.chart_placeholder.pack_forget()
+        if self.chart_canvas is not None:
+            self.chart_canvas.get_tk_widget().destroy()
+
+    def _render_canvas(self, fig):
+        """Embeds the matplotlib figure into the Tkinter window."""
+        fig.tight_layout()
+        self.current_figure = fig
+        self.chart_canvas = FigureCanvasTkAgg(fig, master=self.chart_panel)
+        self.chart_canvas.draw()
+        self.chart_canvas.get_tk_widget().pack(fill="both", expand=True,
+                                               padx=25, pady=20)
+
+    def show_historical_chart(self):
+        """Validates input and displays the historical price chart."""
+        if self.gold_data is None:
+            self.load_gold_data()
+            if self.gold_data is None:
+                return
+
+        try:
+            days = int(self.history_entry.get())
+            if not (2 <= days <= 1800):
+                raise ValueError("Out of bounds")
+        except ValueError:
+            messagebox.showerror("Validation Error",
+                                 "The number of history days must be an integer between 2 and 1800.")
             return
 
-    # Load the data
-    try:
-        gold_data = pd.read_csv(DATA_PATH)
-        gold_data["Date"] = pd.to_datetime(gold_data["Date"])
-        gold_data = gold_data.sort_values("Date")
-        gold_data = gold_data.dropna()
+        filtered_data = self.gold_data.tail(days)
+        self.current_price_label.config(
+            text=f"${filtered_data['Close'].iloc[-1]:.2f}")
+        self.status_label.config(
+            text=f"Status: Displaying last {len(filtered_data)} trading days")
 
-        last_price = gold_data["Close"].iloc[-1]
-        current_price_label.config(text=f"{last_price:.2f} USD")
-        status_label.config(text=f"Status: Loaded {len(gold_data)} records")
+        self._clear_chart_area()
 
-    except Exception as e:
-        messagebox.showerror("Error", f"Could not load data: {e}")
-        status_label.config(text="Status: Load error")
+        fig, ax = plt.subplots(figsize=(10, 5))
+        fig.patch.set_facecolor(CARD)
+        ax.set_facecolor(CARD)
 
+        ax.plot(filtered_data["Date"], filtered_data["Close"], linewidth=2,
+                label="Close Price", color=ACCENT)
 
-show_button = tk.Button(
-    left_panel,
-    text="Pokaż dane historyczne",
-    font=("Segoe UI", 11, "bold"),
-    bg=BUTTON,
-    fg="white",
-    activebackground=BUTTON_HOVER,
-    activeforeground="white",
-    relief="flat",
-    cursor="hand2",
-    height=2,
-    command=show_historical_chart
-)
-show_button.pack(fill="x", padx=25, pady=(0, 12))
+        self._style_axes(ax,
+                         f"Historical Gold Price — Last {len(filtered_data)} Days")
 
-def create_sequences(features, target, time_steps):
-    X = []
-    y = []
+        self._render_canvas(fig)
+        self.add_precise_tooltip(fig, ax, [("Close Price",
+                                            filtered_data["Date"].to_numpy(),
+                                            filtered_data[
+                                                "Close"].to_numpy())])
 
-    for i in range(time_steps, len(features)):
-        X.append(features[i - time_steps:i])
-        y.append(target[i])
+    def show_forecast_chart(self, future_predictions):
+        """Renders both historical data and the newly generated AI forecast."""
+        try:
+            history_days = int(self.history_entry.get())
+        except ValueError:
+            history_days = 50
 
-    return np.array(X), np.array(y)
+        historical_data = self.gold_data.tail(history_days)
+        last_date = historical_data["Date"].iloc[-1]
 
+        # Generate future business days (excluding weekends)
+        future_dates = pd.bdate_range(start=last_date + BDay(1),
+                                      periods=len(future_predictions))
 
-def generate_lstm_forecast():
-    load_gold_data()
+        self._clear_chart_area()
 
-    global gold_data
-    global chart_canvas
+        fig, ax = plt.subplots(figsize=(10, 5))
+        fig.patch.set_facecolor(CARD)
+        ax.set_facecolor(CARD)
 
-    if gold_data is None:
-        load_gold_data()
+        # Plot historical line
+        ax.plot(historical_data["Date"], historical_data["Close"], linewidth=2,
+                label="Historical Price", color=ACCENT)
+        # Plot forecast line
+        ax.plot(future_dates, future_predictions, linewidth=2, linestyle="--",
+                label="LSTM Forecast", color=ACCENT_GREEN)
 
-    if gold_data is None:
-        return
+        self._style_axes(ax, "Gold Price: Historical Data vs LSTM Forecast")
 
-    try:
-        forecast_days = int(forecast_entry.get())
-    except ValueError:
-        messagebox.showerror("Błąd",
-                             "Liczba dni prognozy musi być liczbą całkowitą.")
-        return
+        self._render_canvas(fig)
+        self.add_precise_tooltip(fig, ax, [
+            ("Historical Price", historical_data["Date"].to_numpy(),
+             historical_data["Close"].to_numpy()),
+            ("LSTM Forecast", future_dates.to_numpy(),
+             np.array(future_predictions))
+        ])
 
-    if forecast_days <= 0:
-        messagebox.showerror("Błąd",
-                             "Liczba dni prognozy musi być większa od zera.")
-        return
+    def _style_axes(self, ax, title: str):
+        """Applies consistent styling to matplotlib axes."""
+        ax.set_title(title, color=TEXT, fontsize=14, fontweight="bold")
 
-    forecast_button.config(state="disabled", text="Trwa wczytywanie AI...")
-    show_button.config(state="disabled")
-    status_label.config(text="Status: AI analizuje dane...")
-    root.update_idletasks()
+        ax.set_xlabel("Date", color=MUTED, labelpad=12)
+        ax.set_ylabel("Price (USD)", color=MUTED, labelpad=12)
 
-    try:
-        # 1. WCZYTANIE ZAMROŻONEGO MODELU I SKALERÓW
-        model_path = BASE_DIR / "data" / "best_gold_model.keras"
-        feature_scaler_path = BASE_DIR / "data" / "feature_scaler.save"
-        target_scaler_path = BASE_DIR / "data" / "target_scaler.save"
+        # Enforce a strict single-line date format for major labels
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
 
-        model = load_model(model_path)
-        feature_scaler = joblib.load(feature_scaler_path)
-        target_scaler = joblib.load(target_scaler_path)
+        # Disable minor locators and formatters to prevent rendering artifacts
+        ax.xaxis.set_minor_locator(ticker.NullLocator())
+        ax.xaxis.set_minor_formatter(ticker.NullFormatter())
 
-        # 2. PRZYGOTOWANIE DANYCH WEJŚCIOWYCH
-        data = gold_data[FEATURE_COLUMNS].dropna()
+        # Style major ticks: remove physical lines and adjust text padding
+        ax.tick_params(axis="x", which="major", colors=MUTED, rotation=30,
+                       length=0, pad=5)
+        ax.tick_params(axis="y", which="major", colors=MUTED, length=0, pad=5)
 
-        # Używamy transform() a nie fit_transform(), żeby użyć starych reguł skali!
-        scaled_features = feature_scaler.transform(data[FEATURE_COLUMNS])
+        ax.grid(True, alpha=0.2)
 
-        # Bierzemy tylko ostatnie 30 dni, bo to nasz punkt startowy
-        last_sequence = scaled_features[-TIME_STEPS:].copy()
-        future_predictions = []
+        legend = ax.legend()
+        legend.get_frame().set_facecolor(CARD)
+        legend.get_frame().set_edgecolor(CARD)
+        for text in legend.get_texts():
+            text.set_color(TEXT)
 
-        # 3. FORECAST LOOP (Autoregressive approach from Jupyter Notebook)
-        for _ in range(forecast_days):
-            # Format the data into a 3D package required by LSTM (1 sample, 30 days, 9 features)
-            input_data = last_sequence.reshape(1, TIME_STEPS,
-                                               len(FEATURE_COLUMNS))
+    def add_precise_tooltip(self, fig, ax, series_list):
+        """Attaches an interactive tooltip that tracks the mouse over plot lines."""
 
-            # The AI predicts the price for the next day (as a scaled fraction)
-            predicted_scaled_close = model.predict(input_data, verbose=0)[0][0]
-
-            # Convert the predicted fraction back into real USD price
-            predicted_close = \
-            target_scaler.inverse_transform([[predicted_scaled_close]])[0][0]
-            future_predictions.append(predicted_close)
-
-            # Slide the time window forward using np.roll (just like in Jupyter Notebook).
-            # This drops the oldest record and shifts all features to the left/up.
-            new_sequence = np.roll(last_sequence, -1, axis=0)
-
-            # Insert the newly predicted AI price into the 'Close' column of the newest day.
-            # We put it in the last row (-1) and the first column (0).
-            new_sequence[-1, 0] = predicted_scaled_close
-
-            # Update the sequence so the model can use it in the next loop iteration
-            last_sequence = new_sequence
-
-        # 4. AKTUALIZACJA INTERFEJSU
-        last_real_price = gold_data["Close"].iloc[-1]
-        last_forecast_price = future_predictions[-1]
-
-        current_price_label.config(text=f"{last_real_price:.2f} USD")
-        forecast_price_label.config(text=f"{last_forecast_price:.2f} USD")
-
-        show_forecast_chart(future_predictions)
-
-        status_label.config(
-            text=f"Status: wygenerowano prognozę na {forecast_days} dni")
-
-    except Exception as e:
-        messagebox.showerror("Błąd Krytyczny AI",
-                             f"Coś poszło nie tak z modelem:\n{str(e)}")
-        status_label.config(text="Status: Błąd predykcji")
-
-    finally:
-        forecast_button.config(state="normal", text="Generuj prognozę LSTM")
-        show_button.config(state="normal")
-
-
-def show_forecast_chart(future_predictions):
-    global chart_canvas
-    global current_figure
-
-    try:
-        history_days = int(history_entry.get())
-    except ValueError:
-        history_days = 50
-
-    historical_data = gold_data.tail(history_days)
-
-    last_date = historical_data["Date"].iloc[-1]
-
-    future_dates = pd.bdate_range(
-        start=last_date + BDay(1),
-        periods=len(future_predictions)
-    )
-
-    chart_placeholder.pack_forget()
-
-    if chart_canvas is not None:
-        chart_canvas.get_tk_widget().destroy()
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-
-    fig.patch.set_facecolor(CARD)
-    ax.set_facecolor(CARD)
-
-    ax.plot(
-        historical_data["Date"],
-        historical_data["Close"],
-        linewidth=2,
-        label="Cena historyczna"
-    )
-
-    ax.plot(
-        future_dates,
-        future_predictions,
-        linewidth=2,
-        linestyle="--",
-        label="Prognoza LSTM"
-    )
-
-    ax.set_title(
-        "Prognoza ceny złota przy użyciu LSTM",
-        color=TEXT,
-        fontsize=14,
-        fontweight="bold"
-    )
-
-    ax.set_xlabel("Data", color=MUTED)
-    ax.set_ylabel("Cena USD", color=MUTED)
-
-    ax.tick_params(axis="x", colors=MUTED, rotation=30)
-    ax.tick_params(axis="y", colors=MUTED)
-
-    ax.grid(True, alpha=0.3)
-
-    legend = ax.legend()
-    legend.get_frame().set_facecolor(CARD)
-    legend.get_frame().set_edgecolor(CARD)
-
-    for text in legend.get_texts():
-        text.set_color(TEXT)
-
-    fig.tight_layout()
-    current_figure = fig
-
-    chart_canvas = FigureCanvasTkAgg(fig, master=chart_panel)
-
-    add_precise_tooltip(
-        fig,
-        ax,
-        chart_canvas,
-        [
-            (
-                "Cena historyczna",
-                historical_data["Date"].to_numpy(),
-                historical_data["Close"].to_numpy()
+        # Tooltip with a dark background, but with border and arrow matched to the Save button
+        tooltip = ax.annotate(
+            "", xy=(0, 0), xytext=(15, 15), textcoords="offset points",
+            bbox=dict(
+                boxstyle="round,pad=0.5",
+                fc="#020617",  # Restored original dark background
+                ec="#f59e0b",  # Orange border matching the save button
+                lw=1.2,
+                alpha=0.95
             ),
-            (
-                "Prognoza LSTM",
-                future_dates.to_numpy(),
-                np.array(future_predictions)
-            )
-        ]
-    )
-
-    chart_canvas.draw()
-    chart_canvas.get_tk_widget().pack(fill="both", expand=True, padx=25, pady=20)
-
-def save_chart():
-    if current_figure is None:
-        messagebox.showwarning(
-            "Brak wykresu",
-            "Najpierw wygeneruj wykres historyczny albo prognozę."
+            arrowprops=dict(arrowstyle="->", color="#f59e0b", lw=1.2),
+            # Orange arrow
+            color=TEXT,  # Restored original light text color
+            fontsize=10
         )
-        return
+        tooltip.set_visible(False)
 
-    file_path = filedialog.asksaveasfilename(
-        defaultextension=".png",
-        filetypes=[("PNG image", "*.png")],
-        title="Zapisz wykres jako"
-    )
+        marker, = ax.plot([], [], marker="o", markersize=7, color=TEXT,
+                          linestyle="None", zorder=10)
 
-    if not file_path:
-        return
+        def on_move(event):
+            if event.inaxes != ax or event.xdata is None:
+                tooltip.set_visible(False)
+                marker.set_data([], [])
+                self.chart_canvas.draw_idle()
+                return
 
-    current_figure.savefig(file_path, dpi=300, bbox_inches="tight")
+            closest_point = None
+            min_distance = float("inf")
 
-    messagebox.showinfo(
-        "Sukces",
-        f"Wykres został zapisany:\n{file_path}"
-    )
+            # Find the nearest data point to the cursor
+            for name, dates, values in series_list:
+                x_values = mdates.date2num(pd.to_datetime(dates))
+                index = np.searchsorted(x_values, event.xdata)
 
+                possible_indexes = [i for i in (index - 1, index) if
+                                    0 <= i < len(x_values)]
 
-forecast_button = tk.Button(
-    left_panel,
-    text="Generuj prognozę LSTM",
-    font=("Segoe UI", 11, "bold"),
-    bg=ACCENT_GREEN,
-    fg="#052e16",
-    activebackground="#16a34a",
-    activeforeground="white",
-    relief="flat",
-    cursor="hand2",
-    height=2,
-    command=generate_lstm_forecast
-)
-forecast_button.pack(fill="x", padx=25)
+                for i in possible_indexes:
+                    distance = abs(x_values[i] - event.xdata)
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_point = (name, x_values[i], values[i])
 
-save_chart_button = tk.Button(
-    left_panel,
-    text="Zapisz wykres PNG",
-    font=("Segoe UI", 11, "bold"),
-    bg="#f59e0b",
-    fg="#111827",
-    activebackground="#d97706",
-    activeforeground="white",
-    relief="flat",
-    cursor="hand2",
-    height=2,
-    command=save_chart
-)
+            if closest_point is None:
+                return
 
-save_chart_button.pack(fill="x", padx=25, pady=(12, 0))
+            name, x_point, y_point = closest_point
+            date_text = mdates.num2date(x_point).strftime("%Y-%m-%d")
 
+            tooltip.xy = (x_point, y_point)
+            tooltip.set_text(
+                f"{name}\nDate: {date_text}\nPrice: ${y_point:.2f}")
 
-# =========================
-# KARTY WYNIKÓW
-# =========================
+            # Keep tooltip inside canvas boundaries
+            canvas_width = fig.canvas.get_width_height()[0]
+            if event.x > canvas_width * 0.75:
+                tooltip.set_position((-140, 15))
+            else:
+                tooltip.set_position((15, 15))
 
-cards_frame = tk.Frame(left_panel, bg=PANEL)
-cards_frame.pack(fill="x", padx=25, pady=30)
+            marker.set_data([x_point], [y_point])
+            tooltip.set_visible(True)
+            self.chart_canvas.draw_idle()
 
+        fig.canvas.mpl_connect("motion_notify_event", on_move)
 
-def create_card(title_text, value_text, color):
-    frame = tk.Frame(cards_frame, bg=CARD)
-    frame.pack(fill="x", pady=8)
+    # ==========================================
+    # LSTM PREDICTION LOGIC
+    # ==========================================
 
-    title_label = tk.Label(
-        frame,
-        text=title_text,
-        font=("Segoe UI", 9, "bold"),
-        fg=MUTED,
-        bg=CARD
-    )
-    title_label.pack(anchor="w", padx=15, pady=(12, 0))
+    def start_forecast_thread(self):
+        """Disables UI inputs and starts the prediction algorithm in a background thread."""
+        self.forecast_button.config(state="disabled",
+                                    text="AI is analyzing...")
+        self.show_button.config(state="disabled")
+        self.status_label.config(text="Status: AI process running...")
+        self.root.update_idletasks()
 
-    value_label = tk.Label(
-        frame,
-        text=value_text,
-        font=("Segoe UI", 18, "bold"),
-        fg=color,
-        bg=CARD
-    )
-    value_label.pack(anchor="w", padx=15, pady=(3, 12))
+        thread = threading.Thread(target=self.generate_lstm_forecast,
+                                  daemon=True)
+        thread.start()
 
-    return value_label
+    def generate_lstm_forecast(self):
+        """
+        Core forecasting method.
+        Loads ML assets, scales data, runs the autoregressive loop, and updates the UI.
+        """
+        self.load_gold_data()
+        if self.gold_data is None:
+            self._reset_buttons()
+            return
 
+        try:
+            forecast_days = int(self.forecast_entry.get())
+            if not (2 <= forecast_days <= 30):
+                raise ValueError("Out of bounds")
+        except ValueError:
+            messagebox.showerror("Validation Error",
+                                 "Forecast days must be an integer between 2 and 30.")
+            self._reset_buttons()
+            return
 
-current_price_label = create_card(
-    "AKTUALNA CENA",
-    "-",
-    ACCENT
-)
+        try:
+            # 1. Load frozen model and scalers
+            model_path = BASE_DIR / "data" / "best_gold_model.keras"
+            feature_scaler = joblib.load(
+                BASE_DIR / "data" / "feature_scaler.save")
+            target_scaler = joblib.load(
+                BASE_DIR / "data" / "target_scaler.save")
+            model = load_model(model_path)
 
-forecast_price_label = create_card(
-    "PROGNOZOWANA CENA",
-    "-",
-    ACCENT_GREEN
-)
+            # 2. Prepare sequences
+            data = self.gold_data[FEATURE_COLUMNS].dropna()
+            scaled_features = feature_scaler.transform(data[FEATURE_COLUMNS])
+            last_sequence = scaled_features[-TIME_STEPS:].copy()
+            future_predictions = []
 
-status_label = tk.Label(
-    left_panel,
-    text="Status: oczekiwanie na dane",
-    font=("Segoe UI", 10),
-    fg=MUTED,
-    bg=PANEL
-)
-status_label.pack(anchor="w", padx=25, pady=(15, 0))
+            # 3. Autoregressive prediction loop
+            for _ in range(forecast_days):
+                input_data = last_sequence.reshape(1, TIME_STEPS,
+                                                   len(FEATURE_COLUMNS))
+                predicted_scaled_close = \
+                model.predict(input_data, verbose=0)[0][0]
 
+                # Inverse transform to get real USD value
+                predicted_close = \
+                target_scaler.inverse_transform([[predicted_scaled_close]])[0][
+                    0]
+                future_predictions.append(predicted_close)
 
-# =========================
-# RIGHT PANEL
-# =========================
+                # Slide window forward and append new prediction
+                new_sequence = np.roll(last_sequence, -1, axis=0)
+                new_sequence[-1, 0] = predicted_scaled_close
+                last_sequence = new_sequence
 
-right_panel = tk.Frame(main_frame, bg=BG)
-right_panel.pack(side="right", fill="both", expand=True)
+            # 4. Update UI with results
+            last_real_price = self.gold_data["Close"].iloc[-1]
+            last_forecast_price = future_predictions[-1]
 
+            self.current_price_label.config(text=f"${last_real_price:.2f}")
+            self.forecast_price_label.config(
+                text=f"${last_forecast_price:.2f}")
 
-top_cards = tk.Frame(right_panel, bg=BG)
-top_cards.pack(fill="x", pady=(0, 20))
+            self.show_forecast_chart(future_predictions)
+            self.status_label.config(
+                text=f"Status: Forecast generated for {forecast_days} days")
 
+        except Exception as e:
+            messagebox.showerror("AI Critical Error",
+                                 f"Model execution failed:\n{str(e)}")
+            self.status_label.config(text="Status: Prediction error")
 
-def small_metric(parent, title_text, value_text):
-    frame = tk.Frame(parent, bg=CARD, height=90)
-    frame.pack(side="left", fill="x", expand=True, padx=8)
-    frame.pack_propagate(False)
+        finally:
+            self._reset_buttons()
 
-    tk.Label(
-        frame,
-        text=title_text,
-        font=("Segoe UI", 9, "bold"),
-        fg=MUTED,
-        bg=CARD
-    ).pack(anchor="w", padx=18, pady=(15, 0))
+    def _reset_buttons(self):
+        """Restores UI buttons to their interactive state after a background process finishes."""
+        self.forecast_button.config(state="normal",
+                                    text="Generate LSTM Forecast")
+        self.show_button.config(state="normal")
 
-    tk.Label(
-        frame,
-        text=value_text,
-        font=("Segoe UI", 18, "bold"),
-        fg=TEXT,
-        bg=CARD
-    ).pack(anchor="w", padx=18, pady=(4, 0))
+    # ==========================================
+    # UTILITIES
+    # ==========================================
 
+    def save_chart(self):
+        """Exports the current matplotlib figure to a PNG image file."""
+        if self.current_figure is None:
+            messagebox.showwarning("No Chart",
+                                   "Please generate a historical chart or forecast first.")
+            return
 
-small_metric(top_cards, "MODEL", "LSTM")
-small_metric(top_cards, "WSKAŹNIKI", "RSI / MACD")
-small_metric(top_cards, "AKTYWO", "GOLD")
-small_metric(top_cards, "TRYB", "LOCAL APP")
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png")],
+            title="Save Chart As"
+        )
 
-
-chart_panel = tk.Frame(right_panel, bg=CARD)
-chart_panel.pack(fill="both", expand=True)
-
-chart_title = tk.Label(
-    chart_panel,
-    text="Wykres kursu złota i prognozy",
-    font=("Segoe UI", 18, "bold"),
-    fg=TEXT,
-    bg=CARD
-)
-chart_title.pack(anchor="w", padx=25, pady=(25, 10))
-
-chart_placeholder = tk.Label(
-    chart_panel,
-    text=(
-        "Tutaj zostanie wyświetlony wykres:\n\n"
-        "• historyczny kurs złota\n"
-        "• prognozowany kurs na kolejne dni\n"
-        "• porównanie ceny rzeczywistej i predykcji LSTM\n\n"
-        "W kolejnym kroku podłączymy dane CSV oraz wykres Matplotlib."
-    ),
-    font=("Segoe UI", 15),
-    fg=MUTED,
-    bg=CARD,
-    justify="center"
-)
-chart_placeholder.pack(expand=True)
+        if file_path:
+            self.current_figure.savefig(file_path, dpi=300,
+                                        bbox_inches="tight")
+            messagebox.showinfo("Success",
+                                f"Chart saved successfully at:\n{file_path}")
 
 
-# =========================
-# START
-# =========================
-
-
-
-
-
-root.mainloop()
+# ==========================================
+# APP ENTRY POINT
+# ==========================================
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = GoldForecastApp(root)
+    root.mainloop()
