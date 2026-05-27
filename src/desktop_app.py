@@ -1,5 +1,6 @@
 import os
 import time
+import ctypes
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -51,17 +52,41 @@ class GoldForecastApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Gold Forecast AI - LSTM")
-        self.root.geometry("1450x850")
-        self.root.minsize(1200, 720)
+
+        # Set a safe fallback size for smaller laptop screens
+        self.root.geometry("1100x600")
+        self.root.minsize(1024, 600)
+
+        # Automatically launch the application in a maximized window state.
+        try:
+            self.root.state('zoomed')
+        except tk.TclError:
+            self.root.geometry("1100x600")
+
+        # Define path to the assets folder and set the custom window icon
+        icon_path = BASE_DIR / "assets" / "icon.ico"
+        try:
+            self.root.iconbitmap(icon_path)
+        except Exception:
+            # Fails silently if the icon file is missing or the OS doesn't support .ico
+            pass
+
         self.root.configure(bg=BG)
 
         # Application state variables
         self.gold_data = None
         self.chart_canvas = None
         self.current_figure = None
+        self.layout_state = "expanded"  # Tracks current layout density (expanded/compact)
+
+        # Timer used to debounce rapid window resize events
+        self._resize_timer = None
 
         self._configure_styles()
         self._build_ui()
+
+        # Catch window resizing events to toggle responsive layouts dynamically
+        self.root.bind("<Configure>", self._adjust_vertical_layout)
 
     def _configure_styles(self):
         """Configures ttk styles for consistent UI appearance."""
@@ -94,31 +119,32 @@ class GoldForecastApp:
     def _build_header(self):
         """Constructs the application header with titles."""
         header = tk.Frame(self.root, bg=BG)
-        header.pack(fill="x", padx=30, pady=(25, 10))
+        # Reduced vertical padding to save screen space
+        header.pack(fill="x", padx=25, pady=(15, 5))
 
         title = tk.Label(
             header,
             text="Gold Forecast AI",
-            font=("Segoe UI", 30, "bold"),
+            font=("Segoe UI", 24, "bold"),  # Smaller font size (was 30)
             fg=TEXT,
             bg=BG
         )
         title.pack(anchor="w")
 
-        subtitle = tk.Label(
+        self.subtitle = tk.Label(
             header,
             text="Gold price prediction using an LSTM network and advanced "
                  "indicators (RSI, MACD, EMA, Bollinger Bands, ATR)",
-            font=("Segoe UI", 12),
+            font=("Segoe UI", 11),  # Smaller subtitle font
             fg=MUTED,
             bg=BG
         )
-        subtitle.pack(anchor="w", pady=(5, 0))
+        self.subtitle.pack(anchor="w", pady=(2, 0))
 
     def _build_left_panel(self):
         """Constructs the sidebar containing inputs, controls, and metric cards."""
-        self.left_panel = tk.Frame(self.main_frame, bg=PANEL, width=340)
-        self.left_panel.pack(side="left", fill="y", padx=(0, 20))
+        self.left_panel = tk.Frame(self.main_frame, bg=PANEL, width=300)
+        self.left_panel.pack(side="left", fill="y", padx=(0, 15))
         self.left_panel.pack_propagate(False)
 
         panel_title = tk.Label(
@@ -128,7 +154,8 @@ class GoldForecastApp:
             fg=TEXT,
             bg=PANEL
         )
-        panel_title.pack(anchor="w", padx=25, pady=(25, 20))
+        # Reduced vertical padding below the title
+        panel_title.pack(anchor="w", padx=25, pady=(15, 10))
 
         # Inputs
         self._create_sidebar_label("PRICE HISTORY (LAST DAYS)")
@@ -137,7 +164,7 @@ class GoldForecastApp:
         self._create_sidebar_label("FORECAST (UPCOMING DAYS)")
         self.forecast_entry = self._create_sidebar_entry("20")
 
-        # Action Buttons
+        # Action Buttons (tightened spacing)
         self.show_button = tk.Button(
             self.left_panel, text="Show Historical Data",
             font=("Segoe UI", 11, "bold"),
@@ -146,7 +173,7 @@ class GoldForecastApp:
             relief="flat", cursor="hand2", height=2,
             command=self.show_historical_chart
         )
-        self.show_button.pack(fill="x", padx=25, pady=(0, 12))
+        self.show_button.pack(fill="x", padx=25, pady=(0, 8))
 
         self.forecast_button = tk.Button(
             self.left_panel, text="Generate LSTM Forecast",
@@ -165,22 +192,29 @@ class GoldForecastApp:
             activeforeground="white",
             relief="flat", cursor="hand2", height=2, command=self.save_chart
         )
-        self.save_chart_button.pack(fill="x", padx=25, pady=(12, 0))
+        self.save_chart_button.pack(fill="x", padx=25, pady=(8, 0))
 
-        # Status & Metric Cards
+        # Status & Metric Cards container
         self.cards_frame = tk.Frame(self.left_panel, bg=PANEL)
-        self.cards_frame.pack(fill="x", padx=25, pady=30)
+        self.cards_frame.pack(fill="x", padx=25, pady=(18, 5))
 
-        self.current_price_label = self._create_metric_card("CURRENT PRICE",
-                                                            "-", ACCENT)
-        self.forecast_price_label = self._create_metric_card(
-            "FORECASTED PRICE", "-", ACCENT_GREEN)
+        # Unpack the frame, value label, and title label from the helper method
+        self.current_price_card, self.current_price_label, self.current_title_lbl = self._create_metric_card(
+            "CURRENT PRICE", "-", ACCENT
+        )
+        self.forecast_price_card, self.forecast_price_label, self.forecast_title_lbl = self._create_metric_card(
+            "FORECASTED PRICE", "-", ACCENT_GREEN
+        )
 
+        # Status Label (anchored to the absolute bottom of the left panel)
         self.status_label = tk.Label(
             self.left_panel, text="Status: Waiting for data",
             font=("Segoe UI", 10), fg=MUTED, bg=PANEL
         )
-        self.status_label.pack(anchor="w", padx=25, pady=(15, 0))
+        # side="bottom" forces the widget to stick to the lower edge,
+        # pushing all available empty space above it.
+        self.status_label.pack(side="bottom", anchor="w", padx=25,
+                               pady=(0, 25))
 
     def _build_right_panel(self):
         """Constructs the main dashboard area for charts and key details."""
@@ -191,15 +225,19 @@ class GoldForecastApp:
         top_cards = tk.Frame(self.right_panel, bg=BG)
         top_cards.pack(fill="x", pady=(0, 20))
 
-        # The first three cards have a 16px right margin to separate them.
-        # The left margin is 0 to align with the left edge of the chart below.
         self._create_small_metric(top_cards, "MODEL", "LSTM", pad_x=(0, 16))
-        self._create_small_metric(top_cards, "INDICATORS", "RSI, MACD +3",
-                                  pad_x=(0, 16))
-        self._create_small_metric(top_cards, "ASSET", "GOLD", pad_x=(0, 16))
 
-        # The last card has zero margins to perfectly align with the right edge.
+        # Save a reference to the indicators label specifically for responsive resizing
+        self.indicators_label = self._create_small_metric(
+            top_cards, "INDICATORS", "RSI, MACD +3", pad_x=(0, 16)
+        )
+
+        self._create_small_metric(top_cards, "ASSET", "GOLD", pad_x=(0, 16))
         self._create_small_metric(top_cards, "DATA", "REAL-TIME", pad_x=(0, 0))
+
+        # Bind the resize event (<Configure>) to the top cards container
+        # This will trigger the text adjustment whenever the window width changes
+        top_cards.bind("<Configure>", self._update_indicators_text)
         
         # Chart Container
         self.chart_panel = tk.Frame(self.right_panel, bg=CARD)
@@ -224,50 +262,146 @@ class GoldForecastApp:
         )
         self.chart_placeholder.pack(expand=True)
 
+    def _update_indicators_text(self, event):
+        """
+        Dynamically adjusts the indicators text based on the available width
+        of the top cards container. Acts like a CSS media query.
+        """
+        w = event.width
+
+        # Depending on the pixel width of the container, we show more or fewer indicators
+        if w > 1200:
+            self.indicators_label.config(text="RSI, MACD, EMA, BB, ATR")
+        elif w > 950:
+            self.indicators_label.config(text="RSI, MACD, EMA +2")
+        elif w > 750:
+            self.indicators_label.config(text="RSI, MACD +3")
+        else:
+            self.indicators_label.config(text="RSI, +4")
+
+    def _adjust_vertical_layout(self, event):
+        """
+        Catches the resize event but delays the actual UI update (Debouncing).
+        This prevents Tkinter from lagging and getting trapped in an infinite layout loop.
+        """
+        if event.widget == self.root:
+            # Cancel the previous timer if the user is still resizing the window
+            if self._resize_timer is not None:
+                self.root.after_cancel(self._resize_timer)
+
+            # Wait 150ms after the resizing stops before applying heavy UI changes
+            self._resize_timer = self.root.after(
+                150,
+                lambda: self._apply_layout_changes(self.root.winfo_height())
+            )
+
+    def _apply_layout_changes(self, h):
+        """
+        Performs the actual heavy lifting of hiding/showing widgets based on height.
+        """
+        if h < 750  :
+            if self.layout_state != "compact":
+                self.layout_state = "compact"
+
+                if self.subtitle.winfo_ismapped():
+                    self.subtitle.pack_forget()
+
+                self.current_price_card.pack_forget()
+                self.forecast_price_card.pack_forget()
+
+                self.current_title_lbl.config(text="CURRENT",
+                                              font=("Segoe UI", 8, "bold"))
+                self.forecast_title_lbl.config(text="FORECAST",
+                                               font=("Segoe UI", 8, "bold"))
+                self.current_price_label.config(font=("Segoe UI", 13, "bold"))
+                self.forecast_price_label.config(font=("Segoe UI", 13, "bold"))
+
+                self.current_price_card.pack(side="left", fill="both",
+                                             expand=True, padx=(0, 4))
+                self.forecast_price_card.pack(side="left", fill="both",
+                                              expand=True, padx=(4, 0))
+
+                self.cards_frame.pack_configure(pady=(12, 5))
+                self.status_label.pack_configure(pady=(0, 10))
+        else:
+            if self.layout_state != "expanded":
+                self.layout_state = "expanded"
+
+                if not self.subtitle.winfo_ismapped():
+                    self.subtitle.pack(anchor="w", pady=(2, 0))
+
+                self.current_price_card.pack_forget()
+                self.forecast_price_card.pack_forget()
+
+                self.current_title_lbl.config(text="CURRENT PRICE",
+                                              font=("Segoe UI", 9, "bold"))
+                self.forecast_title_lbl.config(text="FORECASTED PRICE",
+                                               font=("Segoe UI", 9, "bold"))
+                self.current_price_label.config(font=("Segoe UI", 16, "bold"))
+                self.forecast_price_label.config(font=("Segoe UI", 16, "bold"))
+
+                self.current_price_card.pack(fill="x", pady=4)
+                self.forecast_price_card.pack(fill="x", pady=4)
+
+                self.cards_frame.pack_configure(pady=(22, 10))
+                self.status_label.pack_configure(pady=(0, 25))
+
     # UI Helpers
     def _create_sidebar_label(self, text: str):
         tk.Label(self.left_panel, text=text, font=("Segoe UI", 10, "bold"),
                  fg=MUTED, bg=PANEL).pack(anchor="w", padx=25)
 
     def _create_sidebar_entry(self, default_val: str) -> tk.Entry:
-        entry = tk.Entry(self.left_panel, font=("Segoe UI", 12), bg=CARD,
+        """Helper to create text entry fields with tighter vertical spacing."""
+        entry = tk.Entry(self.left_panel, font=("Segoe UI", 11), bg=CARD,
                          fg=TEXT, insertbackground=TEXT, relief="flat")
         entry.insert(0, default_val)
-        entry.pack(fill="x", padx=25, pady=(5, 20), ipady=8)
+        # Reduced ipady from 8 to 5, and bottom margin from 20 to 10
+        entry.pack(fill="x", padx=25, pady=(2, 10), ipady=5)
         return entry
 
     def _create_metric_card(self, title_text: str, value_text: str,
-                            color: str) -> tk.Label:
+                            color: str):
+        """Helper to create bottom data cards. Returns frame, value, and title widgets."""
         frame = tk.Frame(self.cards_frame, bg=CARD)
-        frame.pack(fill="x", pady=8)
-        tk.Label(frame, text=title_text, font=("Segoe UI", 9, "bold"),
-                 fg=MUTED, bg=CARD).pack(anchor="w", padx=15, pady=(12, 0))
+        frame.pack(fill="x", pady=4)
+
+        title_lbl = tk.Label(frame, text=title_text,
+                             font=("Segoe UI", 9, "bold"),
+                             fg=MUTED, bg=CARD)
+        title_lbl.pack(anchor="w", padx=15, pady=(8, 0))
+
         val_label = tk.Label(frame, text=value_text,
-                             font=("Segoe UI", 18, "bold"), fg=color, bg=CARD)
-        val_label.pack(anchor="w", padx=15, pady=(3, 12))
-        return val_label
+                             font=("Segoe UI", 16, "bold"), fg=color, bg=CARD)
+        val_label.pack(anchor="w", padx=15, pady=(0, 8))
+
+        return frame, val_label, title_lbl
 
     def _create_small_metric(self, parent: tk.Frame, title_text: str,
                              value_text: str, pad_x: tuple = (8, 8)):
         """
         Creates a small metric card with customizable horizontal padding.
-        The pad_x parameter allows precise alignment with other UI elements.
+        Returns the value label widget so it can be updated dynamically later.
         """
-        frame = tk.Frame(parent, bg=CARD, height=90)
+        frame = tk.Frame(parent, bg=CARD, height=70)
 
-        # Apply the asymmetrical padding to align borders perfectly
         frame.pack(side="left", fill="both", expand=True, padx=pad_x)
         frame.pack_propagate(False)
 
         tk.Label(
-            frame, text=title_text, font=("Segoe UI", 9, "bold"), fg=MUTED,
+            frame, text=title_text, font=("Segoe UI", 8, "bold"), fg=MUTED,
             bg=CARD
-        ).pack(anchor="w", padx=18, pady=(15, 0))
+        ).pack(anchor="w", padx=15, pady=(10, 0))
 
-        tk.Label(
-            frame, text=value_text, font=("Segoe UI", 18, "bold"), fg=TEXT,
+        # Assign the label to the 'val_label' variable before packing it
+        val_label = tk.Label(
+            frame, text=value_text, font=("Segoe UI", 16, "bold"), fg=TEXT,
             bg=CARD
-        ).pack(anchor="w", padx=18, pady=(4, 0))
+        )
+        val_label.pack(anchor="w", padx=15, pady=(2, 0))
+
+        # Return the label reference to allow dynamic text updates
+        return val_label
 
     # ==========================================
     # BUSINESS LOGIC & DATA HANDLING
@@ -356,7 +490,7 @@ class GoldForecastApp:
 
         self._clear_chart_area()
 
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(9, 4))
         fig.patch.set_facecolor(CARD)
         ax.set_facecolor(CARD)
 
@@ -388,7 +522,7 @@ class GoldForecastApp:
 
         self._clear_chart_area()
 
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(9, 4))
         fig.patch.set_facecolor(CARD)
         ax.set_facecolor(CARD)
 
@@ -429,6 +563,14 @@ class GoldForecastApp:
         ax.tick_params(axis="y", which="major", colors=MUTED, length=0, pad=5)
 
         ax.grid(True, alpha=0.2)
+
+        # Remove top and right spines for a cleaner, modern web-like appearance
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        # Subtly color the remaining left and bottom spines
+        ax.spines["left"].set_color(MUTED)
+        ax.spines["bottom"].set_color(MUTED)
 
         legend = ax.legend()
         legend.get_frame().set_facecolor(CARD)
@@ -516,6 +658,9 @@ class GoldForecastApp:
                                     text="AI is analyzing...")
         self.show_button.config(state="disabled")
         self.status_label.config(text="Status: AI process running...")
+
+        # Change the mouse cursor to a loading spinner
+        self.root.config(cursor="watch")
         self.root.update_idletasks()
 
         thread = threading.Thread(target=self.generate_lstm_forecast,
@@ -601,6 +746,9 @@ class GoldForecastApp:
                                     text="Generate LSTM Forecast")
         self.show_button.config(state="normal")
 
+        # Restore the default mouse pointer
+        self.root.config(cursor="")
+
     # ==========================================
     # UTILITIES
     # ==========================================
@@ -629,6 +777,17 @@ class GoldForecastApp:
 # APP ENTRY POINT
 # ==========================================
 if __name__ == "__main__":
+    # Tell Windows to treat this script as a distinct application.
+    # This forces the Windows taskbar to display our custom .ico file
+    # instead of the default Python executable icon.
+    try:
+        # Create an arbitrary, unique application ID string
+        app_id = 'analytics.goldforecast.ai.1.0'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        # Fails silently on non-Windows operating systems (macOS/Linux)
+        pass
+
     root = tk.Tk()
     app = GoldForecastApp(root)
     root.mainloop()
