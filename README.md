@@ -39,7 +39,15 @@ The learning curve below shows the Mean Squared Error (MSE) for both the trainin
 ![Training Loss](assets/training_loss.png)
 
 **Testing on Hidden Data:**
-After training, the model was evaluated on a hidden test dataset (20% of the data). The chart below compares the real gold close prices with the prices predicted by the LSTM model, proving its ability to capture general market trends.
+After training, the model was evaluated on a hidden test dataset (20% of the data). To objectively measure the model's accuracy, standard regression metrics were calculated:
+
+* **MAE (Mean Absolute Error):** $111.05
+* **RMSE (Root Mean Squared Error):** $151.57
+* **MSE (Mean Squared Error):** 22973.12
+
+> *Context: Considering the gold asset prices often fluctuate in the $4000–$5000 range within our dataset, an average absolute error of ~$111 indicates that the model successfully captures the broader market trends with a highly acceptable deviation margin.*
+
+The chart below visually compares the real gold close prices with the prices predicted by our LSTM model.
 
 ![Prediction on Test Set](assets/prediction.png)
 
