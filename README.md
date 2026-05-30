@@ -1,4 +1,4 @@
-# Gold Price Forecasting AI
+# <img src="assets/icon.png" alt="Icon" width="40" align="top"> Gold Price Forecasting AI
 
 An intelligent desktop application that utilizes a Long Short-Term Memory (LSTM) neural network to predict gold prices. The system automatically fetches financial data, calculates technical indicators, and provides users with an intuitive graphical interface to visualize historical trends and future forecasts.
 
@@ -92,21 +92,43 @@ model.compile(optimizer="adam", loss="mean_squared_error")
 To help the neural network understand the market context, the raw price data is enriched with established financial indicators using the ta library.
 
 ```python
-# --- MOMENTUM & TREND INDICATORS ---
+# --- 1. Momentum Indicators ---
 
 # RSI (Relative Strength Index)
 rsi_indicator = RSIIndicator(close=close_prices, window=14)
-df['RSI'] = rsi_indicator.rsi()
+df["RSI"] = rsi_indicator.rsi()
+
+# --- 2. Trend Indicators ---
 
 # MACD (Moving Average Convergence Divergence)
-macd = MACD(close=close_prices, window_slow=26, window_fast=12, window_sign=9)
-df['MACD'] = macd.macd()
-df['MACD_Signal'] = macd.macd_signal()
+macd = MACD(
+    close=close_prices,
+    window_slow=26,
+    window_fast=12,
+    window_sign=9
+)
+df["MACD"] = macd.macd()
+df["MACD_Signal"] = macd.macd_signal()
+
+# EMA (Exponential Moving Average) - Reacts faster to recent price changes
+ema_indicator = EMAIndicator(close=close_prices, window=20)
+df["EMA_20"] = ema_indicator.ema_indicator()
+
+# --- 3. Volatility Indicators ---
 
 # Bollinger Bands - Shows if the price is unusually high or low
 bb_indicator = BollingerBands(close=close_prices, window=20, window_dev=2)
-df['BB_High'] = bb_indicator.bollinger_hband()
-df['BB_Low'] = bb_indicator.bollinger_lband()
+df["BB_High"] = bb_indicator.bollinger_hband()
+df["BB_Low"] = bb_indicator.bollinger_lband()
+
+# ATR (Average True Range) - Measures overall market volatility
+atr_indicator = AverageTrueRange(
+    high=high_prices,
+    low=low_prices,
+    close=close_prices,
+    window=14
+)
+df["ATR"] = atr_indicator.average_true_range()
 ```
 
 ### Autoregressive Forecasting Loop
@@ -181,5 +203,5 @@ Follow these steps to safely set up and run the project on your local machine:
 
 ---
 <p align="center">
-  Made with by <strong>Antoni Jackowski</strong>
+  Made with 💻 by <strong>Antoni Jackowski</strong> and <strong>Łukasz Grzeszak</strong>
 </p>
