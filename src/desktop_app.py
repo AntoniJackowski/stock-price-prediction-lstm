@@ -710,8 +710,7 @@ class GoldForecastApp:
 
                 # Convert scaled value back to real USD
                 predicted_close = \
-                target_scaler.inverse_transform([[predicted_scaled_close]])[0][
-                    0]
+                target_scaler.inverse_transform([[predicted_scaled_close]])[0][0]
                 future_predictions.append(predicted_close)
 
                 # Update the sequence window with the new prediction
