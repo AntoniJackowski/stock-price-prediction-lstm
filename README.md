@@ -6,37 +6,64 @@ An intelligent desktop application that utilizes a Long Short-Term Memory (LSTM)
 
 ### Application Interface
 
-Here is how the application interface looks in practice. The uncomplicated GUI provides an intuitive way to interact with the complex machine learning model running in the background. You can generate new predictions and view market trends with a single click.
+The application interface provides an intuitive way to interact with the machine learning model running in the background. Users can generate new predictions and view market trends without needing to write any code.
 
-![Application (Main Window)](images/app_main.png)
+![Application Main Window](assets/app_main.png)
 
 ### Dynamic Prediction Charts
 
-The application integrates `matplotlib` directly into the Tkinter window. The charts display historical closing prices alongside the future trajectory predicted by the AI model, making the data easy to read and analyze. Tooltips allow users to check the exact price on a specific day.
+The application integrates matplotlib directly into the Tkinter window. The charts display historical closing prices alongside the future trajectory predicted by the AI model. Interactive tooltips allow users to check the exact price on any specific day.
 
-![Application (Forecast Chart)](images/app_chart.png)
+![Application Chart Window](assets/app_chart.png)
+
+<p align="center">
+  <img src="assets/tooltip.png" alt="Interactive Tooltip Example" width="400">
+</p>
+
+### Responsive User Interface
+
+The desktop application is designed to provide a consistent experience across different screen sizes. The UI automatically adapts to the available window space by dynamically rearranging metric cards and scaling the charts.
+
+| Compact Layout (Small Window) | Expanded Layout (Full Screen) |
+| :---: | :---: |
+| ![Compact Main](assets/app_main_small.png) | ![Expanded Main](assets/app_main.png) |
+| ![Compact Chart](assets/app_chart_small.png) | ![Expanded Chart](assets/app_chart.png) |
+
+## Model Training & Evaluation
+
+The LSTM neural network was built and trained using TensorFlow. To ensure the model performs well, its learning process and accuracy were strictly evaluated.
+
+**Training Performance:**
+The learning curve below shows the Mean Squared Error (MSE) for both the training and validation datasets over 100 epochs. The steady decrease in loss indicates stable learning, and the early stopping mechanism prevented overfitting.
+
+![Training Loss](assets/training_loss.png)
+
+**Testing on Hidden Data:**
+After training, the model was evaluated on a hidden test dataset (20% of the data). The chart below compares the real gold close prices with the prices predicted by the LSTM model, proving its ability to capture general market trends.
+
+![Prediction on Test Set](assets/prediction.png)
 
 ### Dataset & Feature Engineering
 
-Before the neural network can learn, the raw market data is heavily processed. Below is a preview of the preprocessed dataset, enriched with calculated technical indicators (such as RSI, MACD, and Bollinger Bands) which help the model understand market momentum and volatility.
+Before the neural network can learn, the raw market data is processed. Below is a preview of the preprocessed dataset, enriched with calculated technical indicators (such as RSI, MACD, and Bollinger Bands) which help the model understand market momentum and volatility.
 
-![Dataset Preview](images/data_preview.png)
+![Dataset Preview](assets/data_preview.png)
 
 ## Main Features
 
 This project demonstrates a complete Machine Learning pipeline, from data gathering to deployment. The most important features are:
 
-* **Automated Data Fetching:** The system uses the `yfinance` API to download the latest market data automatically, ensuring the model always works with up-to-date information.
-* **Advanced Feature Engineering:** Calculation of various technical indicators (RSI, MACD, EMA, ATR) using the `ta` library to improve the neural network's accuracy.
+* **Automated Data Fetching:** The system uses the yfinance API to download the latest market data automatically.
+* **Advanced Feature Engineering:** Calculation of various technical indicators (RSI, MACD, EMA, ATR) using the ta library.
 * **Deep Learning Model:** A well-structured LSTM architecture built with TensorFlow/Keras, specifically designed for sequential time-series forecasting.
 * **Interactive Visualization:** Dynamic, embedded charts that allow users to visually compare real market data with AI predictions.
-* **Safe & Automated Deployment:** A custom Windows batch script (`launch.bat`) automates the entire setup process, including virtual environment creation and dependency installation.
+* **Safe & Automated Deployment:** A custom Windows batch script (launch.bat) automates the entire setup process, including virtual environment creation and dependency installation.
 
 ## Code Examples
 
 ### Building the Neural Network
 
-The model uses an LSTM architecture optimized for financial time series. It includes a `BatchNormalization` layer to act as a shock absorber for sudden price spikes, and a `Dropout` layer to prevent the model from overfitting to historical data.
+The model uses an LSTM architecture optimized for financial time series. It includes a BatchNormalization layer to act as a shock absorber for sudden price spikes, and a Dropout layer to prevent the model from overfitting to historical data.
 
 ```python
 model = Sequential()
@@ -62,7 +89,7 @@ model.compile(optimizer="adam", loss="mean_squared_error")
 
 ### Feature Engineering (Technical Indicators)
 
-To help the neural network understand the market context, the raw price data is enriched with established financial indicators using the `ta` library.
+To help the neural network understand the market context, the raw price data is enriched with established financial indicators using the ta library.
 
 ```python
 # --- MOMENTUM & TREND INDICATORS ---
@@ -106,7 +133,7 @@ for _ in range(forecast_days):
 
 * **Core & GUI:** Python 3.10, Tkinter
 * **Machine Learning:** TensorFlow, Keras, Scikit-Learn
-* **Data Handling & APIs:** Pandas, NumPy, Yahoo Finance (`yfinance`), Technical Analysis (`ta`)
+* **Data Handling & APIs:** Pandas, NumPy, Yahoo Finance (yfinance), Technical Analysis (ta)
 * **Data Visualization:** Matplotlib
 * **Development & Prototyping:** Jupyter Notebook
 
@@ -154,5 +181,5 @@ Follow these steps to safely set up and run the project on your local machine:
 
 ---
 <p align="center">
-  Made with 💻 by <strong>Antoni Jackowski</strong>
+  Made with by <strong>Antoni Jackowski</strong>
 </p>
