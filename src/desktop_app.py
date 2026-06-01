@@ -718,25 +718,30 @@ class GoldForecastApp:
                 new_sequence[-1, 0] = predicted_scaled_close
                 last_sequence = new_sequence
 
-            # Update the UI components with the final outcomes
-            last_real_price = self.gold_data["Close"].iloc[-1]
-            last_forecast_price = future_predictions[-1]
+            # --- SAFE UI UPDATE (MAIN THREAD) ---
+            def update_ui_safely():
+                # Update the UI components with the final outcomes
+                last_real_price = self.gold_data["Close"].iloc[-1]
+                last_forecast_price = future_predictions[-1]
 
-            self.current_price_label.config(text=f"${last_real_price:.2f}")
-            self.forecast_price_label.config(
-                text=f"${last_forecast_price:.2f}")
+                self.current_price_label.config(text=f"${last_real_price:.2f}")
+                self.forecast_price_label.config(text=f"${last_forecast_price:.2f}")
 
-            self.show_forecast_chart(future_predictions)
-            self.status_label.config(
-                text=f"Status: Forecast generated for {forecast_days} days")
+                self.show_forecast_chart(future_predictions)
+                self.status_label.config(text=f"Status: Forecast generated for {forecast_days} days")
+                self._reset_buttons()
+
+            # Delegate the function execution to the main thread
+            self.root.after(0, update_ui_safely)
 
         except Exception as e:
-            messagebox.showerror("AI Critical Error",
-                                 f"Model execution failed:\n{str(e)}")
-            self.status_label.config(text="Status: Prediction error")
+            # --- SAFE ERROR HANDLING (MAIN THREAD) ---
+            def show_error_safely():
+                messagebox.showerror("AI Critical Error", f"Model execution failed:\n{str(e)}")
+                self.status_label.config(text="Status: Prediction error")
+                self._reset_buttons()
 
-        finally:
-            self._reset_buttons()
+            self.root.after(0, show_error_safely)
 
     def _reset_buttons(self):
         """Restore UI buttons to an interactive state upon process completion."""
