@@ -4,13 +4,12 @@ echo Launching Gold Forecast AI Project...
 echo =========================================
 echo.
 
-REM 1. Check if Python 3.10 is installed using the Windows Launcher
-py -3.10 --version >nul 2>&1
+REM 1. Check if Python is exactly 3.10.x using standard python command
+python -c "import sys; sys.exit(0 if sys.version_info.major == 3 and sys.version_info.minor == 10 else 1)" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] Python 3.10 is not found on your system.
-    echo This AI project requires EXACTLY Python 3.10.x due to TensorFlow dependencies.
-    echo Please download and install Python 3.10.11 directly from:
-    echo https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe
+    echo [ERROR] Incompatible Python version detected.
+    echo This AI project requires EXACTLY Python 3.10.x.
+    echo Please make sure Python 3.10 is installed and added to PATH.
     echo.
     pause
     exit /b
@@ -18,8 +17,8 @@ if %errorlevel% neq 0 (
 
 REM 2. Check if the virtual environment already exists
 if not exist ".venv\Scripts\activate.bat" (
-    echo [INFO] Virtual environment not found. Creating a new one using Python 3.10...
-    py -3.10 -m venv .venv
+    echo [INFO] Virtual environment not found. Creating a new one...
+    python -m venv .venv
 )
 
 REM 3. Activate the virtual environment
